@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import os
+from aiohttp import web
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
@@ -162,7 +164,6 @@ async def handle_text(message: types.Message):
             await message.answer("Пожалуйста, введи текст ответа.")
         return
     else:
-        # Если пользователь не в процессе теста и ввел что-то не по кнопке
         await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
 
 # ---------- Завершение теста, отправка результата и выдача новой ссылки ----------
@@ -199,14 +200,31 @@ async def finish_test(user_id: int):
         "Отправь её кому хочешь и получишь его ответы!"
     )
 
-# ---------- Запуск ----------
+# ---------- HTTP-сервер для Render ----------
+async def health(request):
+    return web.Response(text="OK")
+
 async def main():
     global BOT_USERNAME
     await init_db()
     me = await bot.get_me()
     BOT_USERNAME = me.username
     print(f"Бот запущен: @{BOT_USERNAME}")
-    await dp.start_polling(bot)
+
+    # Запускаем long polling в фоне
+    polling_task = asyncio.create_task(dp.start_polling(bot))
+
+    # Запускаем простой веб-сервер на порту 10000
+    app = web.Application()
+    app.router.add_get("/", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 10000)
+    await site.start()
+    print("HTTP-сервер запущен на порту 10000")
+
+    # Ждём завершения polling (это будет бесконечно)
+    await polling_task
 
 if __name__ == "__main__":
     asyncio.run(main())
