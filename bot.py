@@ -6,11 +6,8 @@ from aiohttp import web
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
-from aiogram.types import InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery
+from aiogram.types import InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import TOKEN
 from database import init_db, save_user, create_test, get_test, save_attempt
@@ -19,18 +16,10 @@ from questions import DEFAULT_QUESTIONS
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+dp = Dispatcher()
 
 BOT_USERNAME = None
 user_sessions = {}
-
-# --- Твой Telegram ID для уведомлений о донатах ---
-OWNER_ID = 1347045944  # Замени на свой ID (число)
-
-# --- Состояния для ввода произвольной суммы доната ---
-class DonationStates(StatesGroup):
-    waiting_for_custom_amount = State()
 
 # ---------- Команда /privacy ----------
 @dp.message(Command("privacy"))
@@ -72,7 +61,7 @@ async def privacy_button(message: types.Message):
 
 # ---------- Команда /start ----------
 @dp.message(CommandStart())
-async def cmd_start(message: types.Message, state: FSMContext):
+async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "без username"
     await save_user(user_id, username)
@@ -90,7 +79,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
                 "questions": questions,
                 "username": message.from_user.username or "пользователь"
             }
-            await send_question(user_id, state)
+            await send_question(user_id)
             return
         else:
             await message.answer("❌ Такой тест не найден.")
@@ -113,14 +102,14 @@ async def cmd_start(message: types.Message, state: FSMContext):
     )
 
 # ---------- Отправка вопроса (поддержка свободных вопросов) ----------
-async def send_question(user_id: int, state: FSMContext):
+async def send_question(user_id: int):
     session = user_sessions.get(user_id)
     if not session:
         return
     q_index = session["current_q"]
     questions = session["questions"]
     if q_index >= len(questions):
-        await finish_test(user_id, state)
+        await finish_test(user_id)
         return
 
     q = questions[q_index]
@@ -138,7 +127,7 @@ async def send_question(user_id: int, state: FSMContext):
 
 # ---------- Обработка нажатий на кнопки ----------
 @dp.callback_query()
-async def handle_answer(callback: types.CallbackQuery, state: FSMContext):
+async def handle_answer(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     session = user_sessions.get(user_id)
     if not session:
@@ -157,42 +146,16 @@ async def handle_answer(callback: types.CallbackQuery, state: FSMContext):
             session["answers"].append(answer)
             session["current_q"] += 1
             await callback.message.delete()
-            await send_question(user_id, state)
+            await send_question(user_id)
             await callback.answer()
-    elif data.startswith("donate_"):
-        # Обработка выбора суммы доната
-        amount = int(data.split("_")[1])
-        await send_invoice(callback.message, amount)
-        await callback.answer()
-    elif data == "donate_custom":
-        # Пользователь выбрал "Другая сумма"
-        await callback.message.answer("Введите сумму в Telegram Stars (целое число от 1 до 1000):")
-        await state.set_state(DonationStates.waiting_for_custom_amount)
-        await state.update_data(message_id=callback.message.message_id)
-        await callback.answer()
     else:
         await callback.answer()
 
-# ---------- Обработка текстовых сообщений (свободный ответ и ввод суммы) ----------
+# ---------- Обработка текстовых сообщений (свободный ответ) ----------
 @dp.message()
-async def handle_text(message: types.Message, state: FSMContext):
+async def handle_text(message: types.Message):
     user_id = message.from_user.id
     session = user_sessions.get(user_id)
-    current_state = await state.get_state()
-    
-    if current_state == DonationStates.waiting_for_custom_amount:
-        # Пользователь вводит свою сумму
-        try:
-            amount = int(message.text.strip())
-            if 1 <= amount <= 1000:
-                await send_invoice(message, amount)
-                await state.clear()
-            else:
-                await message.answer("Сумма должна быть от 1 до 1000. Попробуйте ещё раз.")
-        except ValueError:
-            await message.answer("Пожалуйста, введите целое число.")
-        return
-    
     if session and session.get("waiting_custom"):
         custom_answer = message.text.strip()
         if custom_answer:
@@ -200,53 +163,15 @@ async def handle_text(message: types.Message, state: FSMContext):
             session["current_q"] += 1
             session["waiting_custom"] = False
             await message.answer("✅ Ответ принят!")
-            await send_question(user_id, state)
+            await send_question(user_id)
         else:
             await message.answer("Пожалуйста, введи текст ответа.")
         return
     else:
         await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
 
-# ---------- Отправка счёта (инвойса) на Telegram Stars ----------
-async def send_invoice(message: types.Message, amount: int):
-    await bot.send_invoice(
-        chat_id=message.chat.id,
-        title="Поддержка автора ☕",
-        description="Спасибо, что хотите поддержать проект! Это поможет развитию бота.",
-        payload=f"donation_{amount}",
-        currency="XTR",
-        prices=[LabeledPrice(label="Звёзды", amount=amount)],
-        start_parameter="donate",
-        need_name=False,
-        need_phone_number=False,
-        need_email=False,
-    )
-
-# ---------- Обработка предварительного запроса на оплату ----------
-@dp.pre_checkout_query()
-async def pre_checkout(pre_checkout: PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout.id, ok=True)
-
-# ---------- Обработка успешной оплаты ----------
-@dp.message(lambda m: m.successful_payment is not None)
-async def successful_payment(message: types.Message):
-    payment = message.successful_payment
-    amount = payment.total_amount
-    currency = payment.currency
-    username = message.from_user.username or "пользователь"
-    # Отправляем уведомление админу
-    await bot.send_message(
-        OWNER_ID,
-        f"🎉 Получен донат!\n"
-        f"От: @{username} (id {message.from_user.id})\n"
-        f"Сумма: {amount} {currency}"
-    )
-    await message.answer(
-        f"Спасибо за поддержку! ❤️ Ваши {amount} звёзд помогут развитию бота."
-    )
-
-# ---------- Завершение теста, отправка результата и выдача новой ссылки + кнопка доната ----------
-async def finish_test(user_id: int, state: FSMContext):
+# ---------- Завершение теста, отправка результата и выдача новой ссылки ----------
+async def finish_test(user_id: int):
     session = user_sessions.pop(user_id, None)
     if not session:
         return
@@ -272,32 +197,12 @@ async def finish_test(user_id: int, state: FSMContext):
     questions_json = json.dumps(questions, ensure_ascii=False)
     new_test_id = await create_test(user_id, questions_json)
     new_link = f"https://t.me/{BOT_USERNAME}?start={new_test_id}"
-    
-    # Клавиатура для доната
-    donate_keyboard = InlineKeyboardBuilder()
-    donate_keyboard.add(InlineKeyboardButton(text="☕ Угостить автора", callback_data="donate_show"))
     await bot.send_message(
         user_id,
         f"😄 Ха-ха, тебя разыграли!\n"
         f"Теперь ты можешь разыграть друга — вот твоя ссылка:\n{new_link}\n\n"
-        "Отправь её кому хочешь и получишь его ответы!",
-        reply_markup=donate_keyboard.as_markup()
+        "Отправь её кому хочешь и получишь его ответы!"
     )
-
-# ---------- Обработчик кнопки "Угостить автора" (показывает выбор суммы) ----------
-@dp.callback_query(lambda c: c.data == "donate_show")
-async def show_donation_options(callback: types.CallbackQuery):
-    keyboard = InlineKeyboardBuilder()
-    keyboard.add(InlineKeyboardButton(text="10⭐", callback_data="donate_10"))
-    keyboard.add(InlineKeyboardButton(text="20⭐", callback_data="donate_20"))
-    keyboard.add(InlineKeyboardButton(text="50⭐", callback_data="donate_50"))
-    keyboard.add(InlineKeyboardButton(text="100⭐", callback_data="donate_100"))
-    keyboard.add(InlineKeyboardButton(text="Другая сумма", callback_data="donate_custom"))
-    await callback.message.edit_text(
-        "Выбери сумму поддержки (в Telegram Stars):",
-        reply_markup=keyboard.as_markup()
-    )
-    await callback.answer()
 
 # ---------- HTTP-сервер для Render ----------
 async def health(request):
