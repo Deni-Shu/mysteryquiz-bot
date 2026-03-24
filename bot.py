@@ -90,7 +90,6 @@ async def cmd_start(message: types.Message):
     test_id = await create_test(user_id, questions_json)
     link = f"https://t.me/{BOT_USERNAME}?start={test_id}"
     
-    # Клавиатура с кнопкой политики
     keyboard = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📜 Политика")]],
         resize_keyboard=True
@@ -102,7 +101,7 @@ async def cmd_start(message: types.Message):
         reply_markup=keyboard
     )
 
-# ---------- Отправка вопроса ----------
+# ---------- Отправка вопроса (поддержка свободных вопросов) ----------
 async def send_question(user_id: int):
     session = user_sessions.get(user_id)
     if not session:
@@ -115,11 +114,19 @@ async def send_question(user_id: int):
 
     q = questions[q_index]
     text = f"Вопрос {q_index+1} из {len(questions)}:\n{q['text']}"
-    builder = InlineKeyboardBuilder()
-    for opt in q["options"]:
-        builder.add(InlineKeyboardButton(text=opt, callback_data=f"ans_{opt}"))
-    builder.add(InlineKeyboardButton(text="✍️ Свой вариант", callback_data="ans_custom"))
-    await bot.send_message(user_id, text, reply_markup=builder.as_markup())
+
+    # Проверяем тип вопроса
+    if q.get("type") == "free":
+        # Свободный вопрос: только текст, без кнопок
+        session["waiting_custom"] = True  # будем ждать текстовый ответ
+        await bot.send_message(user_id, text)
+    else:
+        # Обычный вопрос: кнопки вариантов + свой вариант
+        builder = InlineKeyboardBuilder()
+        for opt in q["options"]:
+            builder.add(InlineKeyboardButton(text=opt, callback_data=f"ans_{opt}"))
+        builder.add(InlineKeyboardButton(text="✍️ Свой вариант", callback_data="ans_custom"))
+        await bot.send_message(user_id, text, reply_markup=builder.as_markup())
 
 # ---------- Обработка нажатий на кнопки ----------
 @dp.callback_query()
@@ -147,7 +154,7 @@ async def handle_answer(callback: types.CallbackQuery):
     else:
         await callback.answer()
 
-# ---------- Обработка текстовых сообщений (свободный ответ) ----------
+# ---------- Обработка текстовых сообщений ----------
 @dp.message()
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
@@ -166,7 +173,7 @@ async def handle_text(message: types.Message):
     else:
         await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
 
-# ---------- Завершение теста, отправка результата и выдача новой ссылки ----------
+# ---------- Завершение теста ----------
 async def finish_test(user_id: int):
     session = user_sessions.pop(user_id, None)
     if not session:
@@ -211,10 +218,8 @@ async def main():
     BOT_USERNAME = me.username
     print(f"Бот запущен: @{BOT_USERNAME}")
 
-    # Запускаем long polling в фоне
     polling_task = asyncio.create_task(dp.start_polling(bot))
 
-    # Запускаем простой веб-сервер на порту 10000
     app = web.Application()
     app.router.add_get("/", health)
     runner = web.AppRunner(app)
@@ -223,7 +228,6 @@ async def main():
     await site.start()
     print("HTTP-сервер запущен на порту 10000")
 
-    # Ждём завершения polling (это будет бесконечно)
     await polling_task
 
 if __name__ == "__main__":
