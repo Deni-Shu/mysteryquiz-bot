@@ -5,7 +5,7 @@ from aiohttp import web
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
-from aiogram.types import InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery
+from aiogram.types import InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import TOKEN
@@ -19,12 +19,6 @@ dp = Dispatcher()
 
 BOT_USERNAME = None
 user_sessions = {}
-
-# Словарь для тех, кто ждёт ввода суммы доната
-awaiting_donation = {}
-
-# --- Твой Telegram ID для уведомлений о донатах ---
-OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID
 
 # ---------- Команда /privacy ----------
 @dp.message(Command("privacy"))
@@ -90,7 +84,7 @@ async def cmd_start(message: types.Message):
             await message.answer("❌ Такой тест не найден.")
             return
 
-    # Создаём новый тест
+    # Создаём новый тест для пользователя
     questions_json = json.dumps(DEFAULT_QUESTIONS, ensure_ascii=False)
     test_id = await create_test(user_id, questions_json)
     link = f"https://t.me/{BOT_USERNAME}?start={test_id}"
@@ -135,20 +129,11 @@ async def send_question(user_id: int):
 async def handle_answer(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     session = user_sessions.get(user_id)
-    data = callback.data
-
-    if data == "donate":
-        # Кнопка "Поддержать" – включаем режим ожидания суммы
-        awaiting_donation[user_id] = True
-        await callback.message.answer("Введите сумму в Telegram Stars (целое число от 1 до 1000):")
-        await callback.answer()
-        return
-
-    # Если пользователь не в сессии теста – не обрабатываем другие callback
     if not session:
         await callback.answer("Что-то пошло не так, попробуй /start")
         return
 
+    data = callback.data
     if data.startswith("ans_"):
         answer = data[4:]
         if answer == "custom":
@@ -165,27 +150,11 @@ async def handle_answer(callback: types.CallbackQuery):
     else:
         await callback.answer()
 
-# ---------- Обработка текстовых сообщений ----------
+# ---------- Обработка текстовых сообщений (свободный ответ) ----------
 @dp.message()
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
     session = user_sessions.get(user_id)
-
-    # Сначала проверяем, ждёт ли пользователь ввода суммы доната
-    if user_id in awaiting_donation:
-        try:
-            amount = int(message.text.strip())
-            if 1 <= amount <= 1000:
-                await send_invoice(message, amount)
-                # Удаляем из ожидания
-                del awaiting_donation[user_id]
-            else:
-                await message.answer("Сумма должна быть от 1 до 1000. Попробуйте ещё раз.")
-        except ValueError:
-            await message.answer("Пожалуйста, введите целое число (от 1 до 1000).")
-        return
-
-    # Если пользователь в процессе теста и ждёт свободный ответ
     if session and session.get("waiting_custom"):
         custom_answer = message.text.strip()
         if custom_answer:
@@ -197,48 +166,10 @@ async def handle_text(message: types.Message):
         else:
             await message.answer("Пожалуйста, введи текст ответа.")
         return
+    else:
+        await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
 
-    # Если ничего из вышеперечисленного
-    await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
-
-# ---------- Отправка счёта (инвойса) на Telegram Stars ----------
-async def send_invoice(message: types.Message, amount: int):
-    await bot.send_invoice(
-        chat_id=message.chat.id,
-        title="Поддержка автора ☕",
-        description="Спасибо, что хотите поддержать проект! Это поможет развитию бота.",
-        payload=f"donation_{amount}",
-        currency="XTR",
-        prices=[LabeledPrice(label="Звёзды", amount=amount)],
-        start_parameter="donate",
-        need_name=False,
-        need_phone_number=False,
-        need_email=False,
-    )
-
-# ---------- Обработка предварительного запроса на оплату ----------
-@dp.pre_checkout_query()
-async def pre_checkout(pre_checkout: PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout.id, ok=True)
-
-# ---------- Обработка успешной оплаты ----------
-@dp.message(lambda m: m.successful_payment is not None)
-async def successful_payment(message: types.Message):
-    payment = message.successful_payment
-    amount = payment.total_amount
-    currency = payment.currency
-    username = message.from_user.username or "пользователь"
-    await bot.send_message(
-        OWNER_ID,
-        f"🎉 Получен донат!\n"
-        f"От: @{username} (id {message.from_user.id})\n"
-        f"Сумма: {amount} {currency}"
-    )
-    await message.answer(
-        f"Спасибо за поддержку! ❤️ Ваши {amount} звёзд помогут развитию бота."
-    )
-
-# ---------- Завершение теста, отправка результата и выдача новой ссылки + кнопка доната ----------
+# ---------- Завершение теста, отправка результата и выдача новой ссылки + кнопка "Поделиться" ----------
 async def finish_test(user_id: int):
     session = user_sessions.pop(user_id, None)
     if not session:
@@ -265,16 +196,18 @@ async def finish_test(user_id: int):
     questions_json = json.dumps(questions, ensure_ascii=False)
     new_test_id = await create_test(user_id, questions_json)
     new_link = f"https://t.me/{BOT_USERNAME}?start={new_test_id}"
-    
-    # Клавиатура с кнопкой доната
-    donate_keyboard = InlineKeyboardBuilder()
-    donate_keyboard.add(InlineKeyboardButton(text="☕ Поддержать проект", callback_data="donate"))
+
+    # Кнопка "Поделиться" через официальную ссылку Telegram
+    share_url = f"https://t.me/share/url?url={new_link}"
+    keyboard = InlineKeyboardBuilder()
+    keyboard.add(InlineKeyboardButton(text="📤 Поделиться", url=share_url))
+
     await bot.send_message(
         user_id,
         f"😄 Ха-ха, тебя разыграли!\n"
         f"Теперь ты можешь разыграть друга — вот твоя ссылка:\n{new_link}\n\n"
         "Отправь её кому хочешь и получишь его ответы!",
-        reply_markup=donate_keyboard.as_markup()
+        reply_markup=keyboard.as_markup()
     )
 
 # ---------- HTTP-сервер для Render ----------
