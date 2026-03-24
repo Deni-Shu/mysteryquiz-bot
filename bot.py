@@ -67,8 +67,11 @@ async def cmd_start(message: types.Message):
     await save_user(user_id, username)
 
     args = message.text.split()
+    print(f"DEBUG: /start received, text={message.text}, args={args}")  # <-- добавил
+
     if len(args) > 1:
         test_id = args[1]
+        print(f"DEBUG: Looking for test_id={test_id}")
         test_data = await get_test(test_id)
         if test_data:
             questions = json.loads(test_data["questions_json"])
@@ -82,10 +85,12 @@ async def cmd_start(message: types.Message):
             await send_question(user_id)
             return
         else:
+            print(f"DEBUG: Test not found for id={test_id}")
             await message.answer("❌ Такой тест не найден.")
             return
 
     # Создаём новый тест для пользователя
+    print("DEBUG: Creating new test")
     questions_json = json.dumps(DEFAULT_QUESTIONS, ensure_ascii=False)
     test_id = await create_test(user_id, questions_json)
     link = f"https://t.me/{BOT_USERNAME}?start={test_id}"
