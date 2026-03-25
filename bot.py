@@ -61,6 +61,22 @@ async def cmd_privacy(message: types.Message):
 async def privacy_button(message: types.Message):
     await cmd_privacy(message)
 
+# ---------- Обработчик кнопки "Создать свой тест" (платный) ----------
+@dp.message(lambda message: message.text == "✨ Создать свой тест")
+async def create_custom_test(message: types.Message):
+    await bot.send_invoice(
+        chat_id=message.chat.id,
+        title="Создание своего теста ✨",
+        description="Вы сможете задать до 10 вопросов с вариантами ответов.",
+        payload="custom_test_100",
+        currency="XTR",
+        prices=[LabeledPrice(label="Создание теста", amount=100)],
+        start_parameter="custom_test",
+        need_name=False,
+        need_phone_number=False,
+        need_email=False,
+    )
+
 # ---------- Команда /start ----------
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -80,10 +96,9 @@ async def cmd_start(message: types.Message):
                 "answers": [],
                 "questions": questions,
                 "username": message.from_user.username or "пользователь",
-                "warned": False   # флаг для предупреждения 18+
+                "warned": False
             }
-            # Отправляем предупреждение 18+
-            await send_18_warning(user_id)
+            await send_question(user_id)
             return
         else:
             await message.answer("❌ Такой тест не найден.")
@@ -108,53 +123,24 @@ async def cmd_start(message: types.Message):
         reply_markup=keyboard
     )
 
-# ---------- Функция отправки предупреждения 18+ ----------
-async def send_18_warning(user_id: int):
-    keyboard = InlineKeyboardBuilder()
-    keyboard.add(InlineKeyboardButton(text="Продолжить", callback_data="continue_18"))
-    await bot.send_message(
-        user_id,
-        "🔞 Внимание! Этот тест содержит вопросы для взрослых (18+).\n"
-        "Продолжая, вы подтверждаете, что вам есть 18 лет.",
-        reply_markup=keyboard.as_markup()
-    )
-
-# ---------- Обработчик кнопки "Продолжить" ----------
-@dp.callback_query(lambda c: c.data == "continue_18")
-async def continue_after_warning(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    session = user_sessions.get(user_id)
-    if session and not session.get("warned", True):
-        session["warned"] = True
-        # Удаляем сообщение с предупреждением
-        await callback.message.delete()
-        # Начинаем отправку вопросов
-        await send_question(user_id)
-    else:
-        await callback.answer("Что-то пошло не так, попробуй /start")
-    await callback.answer()
-
-# ---------- Обработчик кнопки "Создать свой тест" (платный) ----------
-@dp.message(lambda message: message.text == "✨ Создать свой тест")
-async def create_custom_test(message: types.Message):
-    await bot.send_invoice(
-        chat_id=message.chat.id,
-        title="Создание своего теста ✨",
-        description="Вы сможете задать до 10 вопросов с вариантами ответов.",
-        payload="custom_test_100",
-        currency="XTR",
-        prices=[LabeledPrice(label="Создание теста", amount=100)],
-        start_parameter="custom_test",
-        need_name=False,
-        need_phone_number=False,
-        need_email=False,
-    )
-
-# ---------- Отправка вопроса ----------
+# ---------- Отправка вопроса (с поддержкой свободных вопросов и предупреждением 18+) ----------
 async def send_question(user_id: int):
     session = user_sessions.get(user_id)
     if not session:
         return
+
+    # Если предупреждение 18+ ещё не было показано
+    if not session.get("warned", False):
+        keyboard = InlineKeyboardBuilder()
+        keyboard.add(InlineKeyboardButton(text="Продолжить", callback_data="continue_18"))
+        await bot.send_message(
+            user_id,
+            "🔞 Внимание! Этот тест содержит вопросы для взрослых (18+). Продолжая, вы подтверждаете, что вам есть 18 лет.",
+            reply_markup=keyboard.as_markup()
+        )
+        session["warned"] = True
+        return
+
     q_index = session["current_q"]
     questions = session["questions"]
     if q_index >= len(questions):
@@ -164,11 +150,18 @@ async def send_question(user_id: int):
     q = questions[q_index]
     text = f"Вопрос {q_index+1} из {len(questions)}:\n{q['text']}"
 
-    builder = InlineKeyboardBuilder()
-    for opt in q["options"]:
-        builder.add(InlineKeyboardButton(text=opt, callback_data=f"ans_{opt}"))
-    builder.add(InlineKeyboardButton(text="✍️ Свой вариант", callback_data="ans_custom"))
-    await bot.send_message(user_id, text, reply_markup=builder.as_markup())
+    # Проверяем тип вопроса
+    if q.get("type") == "free":
+        # Свободный вопрос: ждём текст
+        session["waiting_custom"] = True
+        await bot.send_message(user_id, text)
+    else:
+        # Вопрос с вариантами
+        builder = InlineKeyboardBuilder()
+        for opt in q["options"]:
+            builder.add(InlineKeyboardButton(text=opt, callback_data=f"ans_{opt}"))
+        builder.add(InlineKeyboardButton(text="✍️ Свой вариант", callback_data="ans_custom"))
+        await bot.send_message(user_id, text, reply_markup=builder.as_markup())
 
 # ---------- Обработка нажатий на кнопки ----------
 @dp.callback_query()
@@ -195,7 +188,14 @@ async def handle_answer(callback: types.CallbackQuery):
         await callback.answer()
         return
 
-    # Обработка ответов на вопросы
+    # Обработка кнопки "Продолжить" после предупреждения 18+
+    if data == "continue_18":
+        if session:
+            await callback.message.delete()
+            await send_question(user_id)
+        await callback.answer()
+        return
+
     if not session:
         await callback.answer("Что-то пошло не так, попробуй /start")
         return
@@ -221,12 +221,12 @@ async def handle_answer(callback: types.CallbackQuery):
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
 
-    # Если пользователь в процессе создания кастомного теста
+    # Приоритет 1: сбор кастомного теста
     if user_id in custom_sessions:
         await process_custom_test_creation(message)
         return
 
-    # Если пользователь в процессе прохождения теста и ждёт свободный ответ
+    # Приоритет 2: прохождение теста (свободный ответ)
     session = user_sessions.get(user_id)
     if session and session.get("waiting_custom"):
         custom_answer = message.text.strip()
@@ -239,9 +239,8 @@ async def handle_text(message: types.Message):
         else:
             await message.answer("Пожалуйста, введи текст ответа.")
         return
-
-    # Если сообщение не относится к активным процессам
-    await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
+    else:
+        await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
 
 # ---------- Отправка счёта (инвойса) на Telegram Stars (для доната) ----------
 async def send_invoice(message: types.Message, amount: int):
