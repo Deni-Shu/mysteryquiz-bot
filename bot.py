@@ -19,8 +19,8 @@ dp = Dispatcher()
 
 BOT_USERNAME = None
 user_sessions = {}
+custom_sessions = {}  # для сбора кастомных тестов
 
-# --- Твой Telegram ID для уведомлений о донатах ---
 OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID
 
 # ---------- Команда /privacy ----------
@@ -87,13 +87,16 @@ async def cmd_start(message: types.Message):
             await message.answer("❌ Такой тест не найден.")
             return
 
-    # Создаём новый тест для пользователя
+    # Создаём обычный тест для пользователя
     questions_json = json.dumps(DEFAULT_QUESTIONS, ensure_ascii=False)
     test_id = await create_test(user_id, questions_json)
     link = f"https://t.me/{BOT_USERNAME}?start={test_id}"
     
     keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📜 Политика")]],
+        keyboard=[
+            [KeyboardButton(text="📜 Политика")],
+            [KeyboardButton(text="✨ Создать свой тест")]
+        ],
         resize_keyboard=True
     )
     
@@ -102,6 +105,13 @@ async def cmd_start(message: types.Message):
         "Когда друг пройдёт тест, его ответы придут тебе в личные сообщения.",
         reply_markup=keyboard
     )
+
+# ---------- Обработчик кнопки "Создать свой тест" (бесплатно для теста) ----------
+@dp.message(lambda message: message.text == "✨ Создать свой тест")
+async def create_custom_test(message: types.Message):
+    # Для тестирования сразу запускаем процесс создания
+    await start_custom_test_creation(message.from_user.id)
+    await message.answer("Давай создадим твой уникальный тест!")
 
 # ---------- Отправка вопроса (поддержка свободных вопросов) ----------
 async def send_question(user_id: int):
@@ -136,7 +146,6 @@ async def handle_answer(callback: types.CallbackQuery):
 
     # Обработка доната (фиксированные суммы)
     if data == "donate_show":
-        # Показываем выбор суммы
         keyboard = InlineKeyboardBuilder()
         keyboard.add(InlineKeyboardButton(text="20⭐", callback_data="donate_20"))
         keyboard.add(InlineKeyboardButton(text="50⭐", callback_data="donate_50"))
@@ -153,7 +162,6 @@ async def handle_answer(callback: types.CallbackQuery):
         await callback.answer()
         return
 
-    # Если пользователь не в сессии теста – не обрабатываем другие callback
     if not session:
         await callback.answer("Что-то пошло не так, попробуй /start")
         return
@@ -174,10 +182,17 @@ async def handle_answer(callback: types.CallbackQuery):
     else:
         await callback.answer()
 
-# ---------- Обработка текстовых сообщений (свободный ответ) ----------
+# ---------- Обработка текстовых сообщений ----------
 @dp.message()
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
+
+    # Приоритет 1: сбор кастомного теста
+    if user_id in custom_sessions:
+        await process_custom_test_creation(message)
+        return
+
+    # Приоритет 2: прохождение обычного/кастомного теста
     session = user_sessions.get(user_id)
     if session and session.get("waiting_custom"):
         custom_answer = message.text.strip()
@@ -193,12 +208,12 @@ async def handle_text(message: types.Message):
     else:
         await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
 
-# ---------- Отправка счёта (инвойса) на Telegram Stars ----------
+# ---------- Отправка счёта (инвойса) на Telegram Stars (для доната) ----------
 async def send_invoice(message: types.Message, amount: int):
     await bot.send_invoice(
         chat_id=message.chat.id,
         title="Поддержка автора ☕",
-        description="Спасибо, что хотите поддержать проект! Это поможет развитию бота.",
+        description="Спасибо, что хотите поддержать проект!",
         payload=f"donation_{amount}",
         currency="XTR",
         prices=[LabeledPrice(label="Звёзды", amount=amount)],
@@ -220,17 +235,114 @@ async def successful_payment(message: types.Message):
     amount = payment.total_amount
     currency = payment.currency
     username = message.from_user.username or "пользователь"
+    payload = payment.invoice_payload
+
+    if payload.startswith("custom_test"):
+        # Пользователь заплатил за создание кастомного теста
+        await start_custom_test_creation(message.from_user.id)
+        await message.answer("Оплата прошла успешно! Теперь создадим твой тест.")
+    else:
+        # Обычный донат
+        await bot.send_message(
+            OWNER_ID,
+            f"🎉 Получен донат!\nОт: @{username} (id {message.from_user.id})\nСумма: {amount} {currency}"
+        )
+        await message.answer(f"Спасибо за поддержку! ❤️ Ваши {amount} звёзд помогут развитию бота.")
+
+# ---------- Начало сбора кастомного теста ----------
+async def start_custom_test_creation(user_id: int):
+    custom_sessions[user_id] = {
+        "state": "ask_question_count",
+        "total_questions": None,
+        "current_q": 0,
+        "questions": []
+    }
+    await bot.send_message(user_id, "Сколько вопросов будет в тесте? (от 1 до 10)")
+
+async def process_custom_test_creation(message: types.Message):
+    user_id = message.from_user.id
+    session = custom_sessions[user_id]
+    state = session["state"]
+
+    if state == "ask_question_count":
+        try:
+            count = int(message.text.strip())
+            if 1 <= count <= 10:
+                session["total_questions"] = count
+                session["state"] = "ask_question_text"
+                session["current_q"] = 1
+                await message.answer(f"Вопрос 1 из {count}. Введите текст вопроса:")
+            else:
+                await message.answer("Введите число от 1 до 10.")
+        except ValueError:
+            await message.answer("Пожалуйста, введите целое число.")
+
+    elif state == "ask_question_text":
+        session["current_question"] = {"text": message.text.strip()}
+        # Спрашиваем тип вопроса
+        keyboard = InlineKeyboardBuilder()
+        keyboard.add(InlineKeyboardButton(text="С вариантами", callback_data="custom_type_options"))
+        keyboard.add(InlineKeyboardButton(text="Свободный (ответ пишет сам)", callback_data="custom_type_free"))
+        await message.answer("Выберите тип вопроса:", reply_markup=keyboard.as_markup())
+        session["state"] = "ask_question_type"
+
+    elif state == "ask_options":
+        # Ожидаем список вариантов (через запятую)
+        raw = message.text.strip()
+        options = [opt.strip() for opt in raw.split(",") if opt.strip()]
+        if len(options) < 2:
+            await message.answer("Введите хотя бы 2 варианта через запятую.")
+            return
+        session["current_question"]["options"] = options
+        session["questions"].append(session["current_question"])
+        session["current_q"] += 1
+        if session["current_q"] > session["total_questions"]:
+            await save_custom_test(user_id, session["questions"])
+            del custom_sessions[user_id]
+        else:
+            session["state"] = "ask_question_text"
+            await message.answer(f"Вопрос {session['current_q']} из {session['total_questions']}. Введите текст вопроса:")
+
+# ---------- Обработка callback для выбора типа вопроса ----------
+@dp.callback_query(lambda c: c.data.startswith("custom_type_"))
+async def custom_type_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in custom_sessions:
+        await callback.answer("Сессия не найдена", show_alert=True)
+        return
+    session = custom_sessions[user_id]
+    type_choice = callback.data.split("_")[-1]  # "options" или "free"
+    if type_choice == "free":
+        session["current_question"]["type"] = "free"
+        session["questions"].append(session["current_question"])
+        session["current_q"] += 1
+        if session["current_q"] > session["total_questions"]:
+            await save_custom_test(user_id, session["questions"])
+            del custom_sessions[user_id]
+        else:
+            session["state"] = "ask_question_text"
+            await callback.message.edit_text(f"Вопрос {session['current_q']} из {session['total_questions']}. Введите текст вопроса:")
+    else:  # options
+        session["state"] = "ask_options"
+        await callback.message.edit_text("Введите варианты ответов через запятую (минимум 2):")
+    await callback.answer()
+
+# ---------- Сохранение кастомного теста и выдача ссылки ----------
+async def save_custom_test(user_id: int, questions_list):
+    questions_json = json.dumps(questions_list, ensure_ascii=False)
+    test_id = await create_test(user_id, questions_json)
+    new_link = f"https://t.me/{BOT_USERNAME}?start={test_id}"
+    share_url = f"https://t.me/share/url?url={new_link}"
+    keyboard = InlineKeyboardBuilder()
+    keyboard.add(InlineKeyboardButton(text="📤 Поделиться", url=share_url))
     await bot.send_message(
-        OWNER_ID,
-        f"🎉 Получен донат!\n"
-        f"От: @{username} (id {message.from_user.id})\n"
-        f"Сумма: {amount} {currency}"
-    )
-    await message.answer(
-        f"Спасибо за поддержку! ❤️ Ваши {amount} звёзд помогут развитию бота."
+        user_id,
+        f"✨ Ваш тест готов! Отправьте эту ссылку другу, чтобы разыграть его:\n{new_link}\n\n"
+        "Когда друг пройдёт тест, его ответы придут вам в личные сообщения.",
+        reply_markup=keyboard.as_markup()
     )
 
-# ---------- Завершение теста, отправка результата и выдача новой ссылки + кнопка доната ----------
+# ---------- Завершение обычного теста, отправка результата и выдача новой ссылки + кнопка доната ----------
 async def finish_test(user_id: int):
     session = user_sessions.pop(user_id, None)
     if not session:
@@ -253,12 +365,11 @@ async def finish_test(user_id: int):
         result_text += f"{i}. {q['text']}\n   ➡️ {ans}\n"
     await bot.send_message(creator_id, result_text)
 
-    # Создаём новую ссылку для прошедшего
+    # Создаём новую ссылку для прошедшего (обычный тест)
     questions_json = json.dumps(questions, ensure_ascii=False)
     new_test_id = await create_test(user_id, questions_json)
     new_link = f"https://t.me/{BOT_USERNAME}?start={new_test_id}"
 
-    # Кнопка "Поделиться" и "Поддержать"
     share_url = f"https://t.me/share/url?url={new_link}"
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(text="📤 Поделиться", url=share_url))
