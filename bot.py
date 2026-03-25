@@ -21,7 +21,7 @@ BOT_USERNAME = None
 user_sessions = {}
 custom_sessions = {}
 
-OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID (для уведомлений)
+OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID
 
 # ---------- Команда /privacy ----------
 @dp.message(Command("privacy"))
@@ -61,6 +61,52 @@ async def cmd_privacy(message: types.Message):
 async def privacy_button(message: types.Message):
     await cmd_privacy(message)
 
+# ---------- Обработчик кнопки "Сообщить об ошибке" ----------
+@dp.message(lambda message: message.text == "⚠️ Сообщить об ошибке")
+async def report_error(message: types.Message):
+    await message.answer("Опишите проблему кратко. Мы постараемся исправить как можно скорее.")
+    user_sessions[message.from_user.id] = {"waiting_report": True}
+
+# ---------- Обработка текстовых сообщений ----------
+@dp.message()
+async def handle_text(message: types.Message):
+    user_id = message.from_user.id
+    session = user_sessions.get(user_id)
+
+    # Если пользователь ждёт отправки репорта
+    if session and session.get("waiting_report"):
+        report_text = message.text.strip()
+        if report_text:
+            await bot.send_message(
+                OWNER_ID,
+                f"⚠️ Сообщение об ошибке от @{message.from_user.username or 'пользователь'} (id {user_id}):\n{report_text}"
+            )
+            await message.answer("✅ Спасибо, сообщение отправлено!")
+            del user_sessions[user_id]
+        else:
+            await message.answer("Пожалуйста, напишите текст ошибки.")
+        return
+
+    # Приоритет 1: сбор кастомного теста
+    if user_id in custom_sessions:
+        await process_custom_test_creation(message)
+        return
+
+    # Приоритет 2: прохождение обычного/кастомного теста
+    if session and session.get("waiting_custom"):
+        custom_answer = message.text.strip()
+        if custom_answer:
+            session["answers"].append(custom_answer)
+            session["current_q"] += 1
+            session["waiting_custom"] = False
+            await message.answer("✅ Ответ принят!")
+            await send_question(user_id)
+        else:
+            await message.answer("Пожалуйста, введи текст ответа.")
+        return
+    else:
+        await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
+
 # ---------- Команда /start ----------
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -95,7 +141,8 @@ async def cmd_start(message: types.Message):
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📜 Политика")],
-            [KeyboardButton(text="✨ Создать свой тест")]
+            [KeyboardButton(text="✨ Создать свой тест")],
+            [KeyboardButton(text="⚠️ Сообщить об ошибке")]
         ],
         resize_keyboard=True
     )
@@ -106,11 +153,21 @@ async def cmd_start(message: types.Message):
         reply_markup=keyboard
     )
 
-# ---------- Обработчик кнопки "Создать свой тест" (бесплатно для теста) ----------
+# ---------- ПЛАТНЫЙ ОБРАБОТЧИК КНОПКИ "Создать свой тест" ----------
 @dp.message(lambda message: message.text == "✨ Создать свой тест")
 async def create_custom_test(message: types.Message):
-    await start_custom_test_creation(message.from_user.id)
-    await message.answer("Давай создадим твой уникальный тест!")
+    await bot.send_invoice(
+        chat_id=message.chat.id,
+        title="Создание своего теста ✨",
+        description="Вы сможете задать до 10 вопросов с вариантами ответов.",
+        payload="custom_test_100",
+        currency="XTR",
+        prices=[LabeledPrice(label="Создание теста", amount=100)],
+        start_parameter="custom_test",
+        need_name=False,
+        need_phone_number=False,
+        need_email=False,
+    )
 
 # ---------- Отправка вопроса ----------
 async def send_question(user_id: int):
@@ -177,30 +234,6 @@ async def handle_answer(callback: types.CallbackQuery):
     else:
         await callback.answer()
 
-# ---------- Обработка текстовых сообщений ----------
-@dp.message()
-async def handle_text(message: types.Message):
-    user_id = message.from_user.id
-
-    if user_id in custom_sessions:
-        await process_custom_test_creation(message)
-        return
-
-    session = user_sessions.get(user_id)
-    if session and session.get("waiting_custom"):
-        custom_answer = message.text.strip()
-        if custom_answer:
-            session["answers"].append(custom_answer)
-            session["current_q"] += 1
-            session["waiting_custom"] = False
-            await message.answer("✅ Ответ принят!")
-            await send_question(user_id)
-        else:
-            await message.answer("Пожалуйста, введи текст ответа.")
-        return
-    else:
-        await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
-
 # ---------- Отправка счёта (инвойса) на Telegram Stars (для доната) ----------
 async def send_invoice(message: types.Message, amount: int):
     await bot.send_invoice(
@@ -240,7 +273,7 @@ async def successful_payment(message: types.Message):
         )
         await message.answer(f"Спасибо за поддержку! ❤️ Ваши {amount} звёзд помогут развитию бота.")
 
-# ---------- Начало сбора кастомного теста (бесплатно) ----------
+# ---------- Начало сбора кастомного теста (вызывается после оплаты) ----------
 async def start_custom_test_creation(user_id: int):
     custom_sessions[user_id] = {
         "state": "ask_question_count",
