@@ -5,7 +5,7 @@ from aiohttp import web
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
-from aiogram.types import InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import TOKEN
@@ -19,6 +19,9 @@ dp = Dispatcher()
 
 BOT_USERNAME = None
 user_sessions = {}
+
+# --- Твой Telegram ID для уведомлений о донатах ---
+OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID
 
 # ---------- Команда /privacy ----------
 @dp.message(Command("privacy"))
@@ -129,11 +132,32 @@ async def send_question(user_id: int):
 async def handle_answer(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     session = user_sessions.get(user_id)
+    data = callback.data
+
+    # Обработка доната (фиксированные суммы)
+    if data == "donate_show":
+        # Показываем выбор суммы
+        keyboard = InlineKeyboardBuilder()
+        keyboard.add(InlineKeyboardButton(text="20⭐", callback_data="donate_20"))
+        keyboard.add(InlineKeyboardButton(text="50⭐", callback_data="donate_50"))
+        keyboard.add(InlineKeyboardButton(text="100⭐", callback_data="donate_100"))
+        await callback.message.edit_text(
+            "Выбери сумму поддержки (в Telegram Stars):",
+            reply_markup=keyboard.as_markup()
+        )
+        await callback.answer()
+        return
+    elif data.startswith("donate_"):
+        amount = int(data.split("_")[1])
+        await send_invoice(callback.message, amount)
+        await callback.answer()
+        return
+
+    # Если пользователь не в сессии теста – не обрабатываем другие callback
     if not session:
         await callback.answer("Что-то пошло не так, попробуй /start")
         return
 
-    data = callback.data
     if data.startswith("ans_"):
         answer = data[4:]
         if answer == "custom":
@@ -169,7 +193,44 @@ async def handle_text(message: types.Message):
     else:
         await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
 
-# ---------- Завершение теста, отправка результата и выдача новой ссылки + кнопка "Поделиться" ----------
+# ---------- Отправка счёта (инвойса) на Telegram Stars ----------
+async def send_invoice(message: types.Message, amount: int):
+    await bot.send_invoice(
+        chat_id=message.chat.id,
+        title="Поддержка автора ☕",
+        description="Спасибо, что хотите поддержать проект! Это поможет развитию бота.",
+        payload=f"donation_{amount}",
+        currency="XTR",
+        prices=[LabeledPrice(label="Звёзды", amount=amount)],
+        start_parameter="donate",
+        need_name=False,
+        need_phone_number=False,
+        need_email=False,
+    )
+
+# ---------- Обработка предварительного запроса на оплату ----------
+@dp.pre_checkout_query()
+async def pre_checkout(pre_checkout: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout.id, ok=True)
+
+# ---------- Обработка успешной оплаты ----------
+@dp.message(lambda m: m.successful_payment is not None)
+async def successful_payment(message: types.Message):
+    payment = message.successful_payment
+    amount = payment.total_amount
+    currency = payment.currency
+    username = message.from_user.username or "пользователь"
+    await bot.send_message(
+        OWNER_ID,
+        f"🎉 Получен донат!\n"
+        f"От: @{username} (id {message.from_user.id})\n"
+        f"Сумма: {amount} {currency}"
+    )
+    await message.answer(
+        f"Спасибо за поддержку! ❤️ Ваши {amount} звёзд помогут развитию бота."
+    )
+
+# ---------- Завершение теста, отправка результата и выдача новой ссылки + кнопка доната ----------
 async def finish_test(user_id: int):
     session = user_sessions.pop(user_id, None)
     if not session:
@@ -197,10 +258,11 @@ async def finish_test(user_id: int):
     new_test_id = await create_test(user_id, questions_json)
     new_link = f"https://t.me/{BOT_USERNAME}?start={new_test_id}"
 
-    # Кнопка "Поделиться" через официальную ссылку Telegram
+    # Кнопка "Поделиться" и "Поддержать"
     share_url = f"https://t.me/share/url?url={new_link}"
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(text="📤 Поделиться", url=share_url))
+    keyboard.add(InlineKeyboardButton(text="☕ Поддержать", callback_data="donate_show"))
 
     await bot.send_message(
         user_id,
