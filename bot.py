@@ -14,6 +14,8 @@ from questions import DEFAULT_QUESTIONS
 
 logging.basicConfig(level=logging.INFO)
 
+print("Бот стартует, регистрируем команды...")
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
@@ -110,13 +112,16 @@ async def handle_text(message: types.Message):
 # ---------- Команда /start ----------
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
+    print("DEBUG: cmd_start called")   # отладка
     user_id = message.from_user.id
     username = message.from_user.username or "без username"
     await save_user(user_id, username)
 
     args = message.text.split()
+    print(f"DEBUG: args={args}")   # отладка
     if len(args) > 1:
         test_id = args[1]
+        print(f"DEBUG: looking for test_id={test_id}")
         test_data = await get_test(test_id)
         if test_data:
             questions = json.loads(test_data["questions_json"])
@@ -130,10 +135,12 @@ async def cmd_start(message: types.Message):
             await send_question(user_id)
             return
         else:
+            print(f"DEBUG: test not found")
             await message.answer("❌ Такой тест не найден.")
             return
 
     # Создаём обычный тест для пользователя
+    print("DEBUG: creating new test")
     questions_json = json.dumps(DEFAULT_QUESTIONS, ensure_ascii=False)
     test_id = await create_test(user_id, questions_json)
     link = f"https://t.me/{BOT_USERNAME}?start={test_id}"
@@ -399,6 +406,7 @@ async def main():
     BOT_USERNAME = me.username
     print(f"Бот запущен: @{BOT_USERNAME}")
 
+    print("Запускаем поллинг...")
     polling_task = asyncio.create_task(dp.start_polling(bot))
 
     app = web.Application()
