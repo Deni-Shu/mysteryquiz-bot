@@ -19,9 +19,9 @@ dp = Dispatcher()
 
 BOT_USERNAME = None
 user_sessions = {}
-custom_sessions = {}  # для сбора кастомных тестов
+custom_sessions = {}
 
-OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID
+OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID (пока не используется, но пусть будет)
 
 # ---------- Команда /privacy ----------
 @dp.message(Command("privacy"))
@@ -109,11 +109,10 @@ async def cmd_start(message: types.Message):
 # ---------- Обработчик кнопки "Создать свой тест" (бесплатно для теста) ----------
 @dp.message(lambda message: message.text == "✨ Создать свой тест")
 async def create_custom_test(message: types.Message):
-    # Для тестирования сразу запускаем процесс создания
     await start_custom_test_creation(message.from_user.id)
     await message.answer("Давай создадим твой уникальный тест!")
 
-# ---------- Отправка вопроса (поддержка свободных вопросов) ----------
+# ---------- Отправка вопроса ----------
 async def send_question(user_id: int):
     session = user_sessions.get(user_id)
     if not session:
@@ -127,15 +126,11 @@ async def send_question(user_id: int):
     q = questions[q_index]
     text = f"Вопрос {q_index+1} из {len(questions)}:\n{q['text']}"
 
-    if q.get("type") == "free":
-        session["waiting_custom"] = True
-        await bot.send_message(user_id, text)
-    else:
-        builder = InlineKeyboardBuilder()
-        for opt in q["options"]:
-            builder.add(InlineKeyboardButton(text=opt, callback_data=f"ans_{opt}"))
-        builder.add(InlineKeyboardButton(text="✍️ Свой вариант", callback_data="ans_custom"))
-        await bot.send_message(user_id, text, reply_markup=builder.as_markup())
+    builder = InlineKeyboardBuilder()
+    for opt in q["options"]:
+        builder.add(InlineKeyboardButton(text=opt, callback_data=f"ans_{opt}"))
+    builder.add(InlineKeyboardButton(text="✍️ Свой вариант", callback_data="ans_custom"))
+    await bot.send_message(user_id, text, reply_markup=builder.as_markup())
 
 # ---------- Обработка нажатий на кнопки ----------
 @dp.callback_query()
@@ -144,7 +139,7 @@ async def handle_answer(callback: types.CallbackQuery):
     session = user_sessions.get(user_id)
     data = callback.data
 
-    # Обработка доната (фиксированные суммы)
+    # Обработка доната (фиксированные суммы) – пока оставим для теста, но можно убрать
     if data == "donate_show":
         keyboard = InlineKeyboardBuilder()
         keyboard.add(InlineKeyboardButton(text="20⭐", callback_data="donate_20"))
@@ -187,12 +182,10 @@ async def handle_answer(callback: types.CallbackQuery):
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
 
-    # Приоритет 1: сбор кастомного теста
     if user_id in custom_sessions:
         await process_custom_test_creation(message)
         return
 
-    # Приоритет 2: прохождение обычного/кастомного теста
     session = user_sessions.get(user_id)
     if session and session.get("waiting_custom"):
         custom_answer = message.text.strip()
@@ -249,7 +242,7 @@ async def successful_payment(message: types.Message):
         )
         await message.answer(f"Спасибо за поддержку! ❤️ Ваши {amount} звёзд помогут развитию бота.")
 
-# ---------- Начало сбора кастомного теста ----------
+# ---------- Начало сбора кастомного теста (бесплатно) ----------
 async def start_custom_test_creation(user_id: int):
     custom_sessions[user_id] = {
         "state": "ask_question_count",
@@ -257,7 +250,11 @@ async def start_custom_test_creation(user_id: int):
         "current_q": 0,
         "questions": []
     }
-    await bot.send_message(user_id, "Сколько вопросов будет в тесте? (от 1 до 10)")
+    await bot.send_message(
+        user_id,
+        "Сколько вопросов будет в тесте? (от 1 до 10)\n\n"
+        "Каждый вопрос будет с вариантами ответов. Пользователь также сможет написать свой вариант."
+    )
 
 async def process_custom_test_creation(message: types.Message):
     user_id = message.from_user.id
@@ -279,19 +276,20 @@ async def process_custom_test_creation(message: types.Message):
 
     elif state == "ask_question_text":
         session["current_question"] = {"text": message.text.strip()}
-        # Спрашиваем тип вопроса
-        keyboard = InlineKeyboardBuilder()
-        keyboard.add(InlineKeyboardButton(text="С вариантами", callback_data="custom_type_options"))
-        keyboard.add(InlineKeyboardButton(text="Свободный (ответ пишет сам)", callback_data="custom_type_free"))
-        await message.answer("Выберите тип вопроса:", reply_markup=keyboard.as_markup())
-        session["state"] = "ask_question_type"
+        session["state"] = "ask_options"
+        await message.answer(
+            "Введите варианты ответов через запятую (от 2 до 6 вариантов).\n\n"
+            "Пример: Дружба, Любовь, Приключения"
+        )
 
     elif state == "ask_options":
-        # Ожидаем список вариантов (через запятую)
         raw = message.text.strip()
         options = [opt.strip() for opt in raw.split(",") if opt.strip()]
         if len(options) < 2:
-            await message.answer("Введите хотя бы 2 варианта через запятую.")
+            await message.answer("Нужно хотя бы 2 варианта. Попробуйте ещё раз.")
+            return
+        if len(options) > 6:
+            await message.answer("Максимум 6 вариантов. Пожалуйста, введите не больше 6.")
             return
         session["current_question"]["options"] = options
         session["questions"].append(session["current_question"])
@@ -302,30 +300,6 @@ async def process_custom_test_creation(message: types.Message):
         else:
             session["state"] = "ask_question_text"
             await message.answer(f"Вопрос {session['current_q']} из {session['total_questions']}. Введите текст вопроса:")
-
-# ---------- Обработка callback для выбора типа вопроса ----------
-@dp.callback_query(lambda c: c.data.startswith("custom_type_"))
-async def custom_type_callback(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id not in custom_sessions:
-        await callback.answer("Сессия не найдена", show_alert=True)
-        return
-    session = custom_sessions[user_id]
-    type_choice = callback.data.split("_")[-1]  # "options" или "free"
-    if type_choice == "free":
-        session["current_question"]["type"] = "free"
-        session["questions"].append(session["current_question"])
-        session["current_q"] += 1
-        if session["current_q"] > session["total_questions"]:
-            await save_custom_test(user_id, session["questions"])
-            del custom_sessions[user_id]
-        else:
-            session["state"] = "ask_question_text"
-            await callback.message.edit_text(f"Вопрос {session['current_q']} из {session['total_questions']}. Введите текст вопроса:")
-    else:  # options
-        session["state"] = "ask_options"
-        await callback.message.edit_text("Введите варианты ответов через запятую (минимум 2):")
-    await callback.answer()
 
 # ---------- Сохранение кастомного теста и выдача ссылки ----------
 async def save_custom_test(user_id: int, questions_list):
