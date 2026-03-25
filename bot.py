@@ -21,7 +21,7 @@ BOT_USERNAME = None
 user_sessions = {}
 custom_sessions = {}
 
-OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID (пока не используется, но пусть будет)
+OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID
 
 # ---------- Команда /privacy ----------
 @dp.message(Command("privacy"))
@@ -106,11 +106,21 @@ async def cmd_start(message: types.Message):
         reply_markup=keyboard
     )
 
-# ---------- Обработчик кнопки "Создать свой тест" (бесплатно для теста) ----------
+# ---------- Обработчик кнопки "Создать свой тест" (платный) ----------
 @dp.message(lambda message: message.text == "✨ Создать свой тест")
 async def create_custom_test(message: types.Message):
-    await start_custom_test_creation(message.from_user.id)
-    await message.answer("Давай создадим твой уникальный тест!")
+    await bot.send_invoice(
+        chat_id=message.chat.id,
+        title="Создание своего теста ✨",
+        description="Вы сможете задать до 10 вопросов с вариантами ответов.",
+        payload="custom_test_100",
+        currency="XTR",
+        prices=[LabeledPrice(label="Создание теста", amount=100)],
+        start_parameter="custom_test",
+        need_name=False,
+        need_phone_number=False,
+        need_email=False,
+    )
 
 # ---------- Отправка вопроса ----------
 async def send_question(user_id: int):
@@ -139,7 +149,7 @@ async def handle_answer(callback: types.CallbackQuery):
     session = user_sessions.get(user_id)
     data = callback.data
 
-    # Обработка доната (фиксированные суммы) – пока оставим для теста, но можно убрать
+    # Обработка доната (фиксированные суммы)
     if data == "donate_show":
         keyboard = InlineKeyboardBuilder()
         keyboard.add(InlineKeyboardButton(text="20⭐", callback_data="donate_20"))
@@ -242,7 +252,7 @@ async def successful_payment(message: types.Message):
         )
         await message.answer(f"Спасибо за поддержку! ❤️ Ваши {amount} звёзд помогут развитию бота.")
 
-# ---------- Начало сбора кастомного теста (бесплатно) ----------
+# ---------- Начало сбора кастомного теста ----------
 async def start_custom_test_creation(user_id: int):
     custom_sessions[user_id] = {
         "state": "ask_question_count",
