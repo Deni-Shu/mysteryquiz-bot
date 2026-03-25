@@ -18,8 +18,8 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 BOT_USERNAME = None
-user_sessions = {}
-awaiting_report = {}   # отдельный словарь для тех, кто ждёт отправки репорта
+user_sessions = {}          # сессии прохождения тестов
+awaiting_report = {}        # ожидание текста ошибки
 
 OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID
 
@@ -64,15 +64,15 @@ async def privacy_button(message: types.Message):
 # ---------- Обработчик кнопки "Сообщить об ошибке" ----------
 @dp.message(lambda message: message.text == "⚠️ Сообщить об ошибке")
 async def report_error(message: types.Message):
-    await message.answer("Опишите проблему кратко. Мы постараемся исправить как можно скорее.")
     awaiting_report[message.from_user.id] = True
+    await message.answer("Опишите проблему кратко. Мы постараемся исправить как можно скорее.")
 
 # ---------- Обработка текстовых сообщений ----------
 @dp.message()
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
 
-    # Приоритет 1: отправка репорта
+    # 1. Если пользователь ждёт отправки репорта
     if user_id in awaiting_report:
         report_text = message.text.strip()
         if report_text:
@@ -86,7 +86,7 @@ async def handle_text(message: types.Message):
             await message.answer("Пожалуйста, напишите текст ошибки.")
         return
 
-    # Приоритет 2: прохождение теста
+    # 2. Прохождение теста
     session = user_sessions.get(user_id)
     if session and session.get("waiting_custom"):
         custom_answer = message.text.strip()
@@ -99,8 +99,9 @@ async def handle_text(message: types.Message):
         else:
             await message.answer("Пожалуйста, введи текст ответа.")
         return
-    else:
-        await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
+
+    # 3. Если ничего из вышеперечисленного
+    await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
 
 # ---------- Команда /start ----------
 @dp.message(CommandStart())
@@ -136,7 +137,8 @@ async def cmd_start(message: types.Message):
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📜 Политика")],
-            [KeyboardButton(text="⚠️ Сообщить об ошибке")]   # добавили кнопку
+            [KeyboardButton(text="✨ Создать свой тест")],
+            [KeyboardButton(text="⚠️ Сообщить об ошибке")]
         ],
         resize_keyboard=True
     )
@@ -147,8 +149,10 @@ async def cmd_start(message: types.Message):
         reply_markup=keyboard
     )
 
-# ---------- Обработчик кнопки "Создать свой тест" пока убран ----------
-# (мы его не добавляем, чтобы не усложнять)
+# ---------- Обработчик кнопки "Создать свой тест" (пока заглушка) ----------
+@dp.message(lambda message: message.text == "✨ Создать свой тест")
+async def create_custom_test(message: types.Message):
+    await message.answer("🔧 Функция в разработке. Скоро появится!")
 
 # ---------- Отправка вопроса ----------
 async def send_question(user_id: int):
@@ -215,7 +219,7 @@ async def handle_answer(callback: types.CallbackQuery):
     else:
         await callback.answer()
 
-# ---------- Отправка счёта (инвойса) на Telegram Stars (для доната) ----------
+# ---------- Отправка счёта (инвойса) на Telegram Stars ----------
 async def send_invoice(message: types.Message, amount: int):
     await bot.send_invoice(
         chat_id=message.chat.id,
@@ -248,7 +252,7 @@ async def successful_payment(message: types.Message):
     )
     await message.answer(f"Спасибо за поддержку! ❤️ Ваши {amount} звёзд помогут развитию бота.")
 
-# ---------- Завершение обычного теста, отправка результата и выдача новой ссылки + кнопка доната ----------
+# ---------- Завершение теста, отправка результата и выдача новой ссылки + кнопка доната ----------
 async def finish_test(user_id: int):
     session = user_sessions.pop(user_id, None)
     if not session:
