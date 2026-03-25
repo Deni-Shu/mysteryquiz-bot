@@ -21,7 +21,7 @@ BOT_USERNAME = None
 user_sessions = {}
 custom_sessions = {}
 
-OWNER_ID = 1347045944  # пока не используется, но можно заменить на свой
+OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID (для уведомлений)
 
 # ---------- Команда /privacy ----------
 @dp.message(Command("privacy"))
@@ -106,7 +106,7 @@ async def cmd_start(message: types.Message):
         reply_markup=keyboard
     )
 
-# ---------- Обработчик кнопки "Создать свой тест" (бесплатно) ----------
+# ---------- Обработчик кнопки "Создать свой тест" (бесплатно для теста) ----------
 @dp.message(lambda message: message.text == "✨ Создать свой тест")
 async def create_custom_test(message: types.Message):
     await start_custom_test_creation(message.from_user.id)
@@ -139,13 +139,13 @@ async def handle_answer(callback: types.CallbackQuery):
     session = user_sessions.get(user_id)
     data = callback.data
 
-    # Обработка доната (фиксированные суммы) – пока оставим для теста, но можно убрать
+    # Обработка доната: отправляем новое сообщение, не трогаем исходное
     if data == "donate_show":
         keyboard = InlineKeyboardBuilder()
         keyboard.add(InlineKeyboardButton(text="20⭐", callback_data="donate_20"))
         keyboard.add(InlineKeyboardButton(text="50⭐", callback_data="donate_50"))
         keyboard.add(InlineKeyboardButton(text="100⭐", callback_data="donate_100"))
-        await callback.message.edit_text(
+        await callback.message.answer(
             "Выбери сумму поддержки (в Telegram Stars):",
             reply_markup=keyboard.as_markup()
         )
@@ -231,11 +231,9 @@ async def successful_payment(message: types.Message):
     payload = payment.invoice_payload
 
     if payload.startswith("custom_test"):
-        # Пользователь заплатил за создание кастомного теста
         await start_custom_test_creation(message.from_user.id)
         await message.answer("Оплата прошла успешно! Теперь создадим твой тест.")
     else:
-        # Обычный донат
         await bot.send_message(
             OWNER_ID,
             f"🎉 Получен донат!\nОт: @{username} (id {message.from_user.id})\nСумма: {amount} {currency}"
