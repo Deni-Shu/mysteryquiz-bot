@@ -21,7 +21,7 @@ BOT_USERNAME = None
 user_sessions = {}
 custom_sessions = {}
 
-OWNER_ID = 123456789  # ЗАМЕНИТЕ НА ВАШ TELEGRAM ID
+OWNER_ID = 1347045944  # ЗАМЕНИТЕ НА ВАШ TELEGRAM ID
 
 # ---------- Команда /privacy ----------
 @dp.message(Command("privacy"))
