@@ -21,7 +21,7 @@ BOT_USERNAME = None
 user_sessions = {}
 custom_sessions = {}
 
-OWNER_ID = 1347045944  # ЗАМЕНИТЕ НА ВАШ TELEGRAM ID
+OWNER_ID = 1347045944  # ЗАМЕНИТЕ НА СВОЙ ID
 
 # ---------- Команда /privacy ----------
 @dp.message(Command("privacy"))
@@ -61,6 +61,11 @@ async def cmd_privacy(message: types.Message):
 async def privacy_button(message: types.Message):
     await cmd_privacy(message)
 
+# ---------- Кнопка "Бонус за подписку" (пока неактивна) ----------
+@dp.message(lambda message: message.text == "🔔 Бонус за подписку")
+async def bonus_button(message: types.Message):
+    await message.answer("🔧 Функция временно недоступна. Скоро появится!")
+
 # ---------- Обработчик кнопки "Создать свой тест" (платный) ----------
 @dp.message(lambda message: message.text == "✨ Создать свой тест")
 async def create_custom_test(message: types.Message):
@@ -76,6 +81,18 @@ async def create_custom_test(message: types.Message):
         need_phone_number=False,
         need_email=False,
     )
+
+# ---------- Показать главное меню ----------
+async def show_main_menu(user_id: int, text: str = "🎉 Главное меню"):
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📜 Политика")],
+            [KeyboardButton(text="✨ Создать свой тест")],
+            [KeyboardButton(text="🔔 Бонус за подписку")]
+        ],
+        resize_keyboard=True
+    )
+    await bot.send_message(user_id, text, reply_markup=keyboard)
 
 # ---------- Команда /start ----------
 @dp.message(CommandStart())
@@ -104,25 +121,12 @@ async def cmd_start(message: types.Message):
             await message.answer("❌ Такой тест не найден.")
             return
 
-    # Создаём обычный тест для пользователя
+    # Обычный запуск: создаём новый тест и показываем главное меню
     questions_json = json.dumps(DEFAULT_QUESTIONS, ensure_ascii=False)
     test_id = await create_test(user_id, questions_json)
     link = f"https://t.me/{BOT_USERNAME}?start={test_id}"
     
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📜 Политика")],
-            [KeyboardButton(text="✨ Создать свой тест")],
-            [KeyboardButton(text="🔔 Бонус (скоро)")]   # заглушка
-        ],
-        resize_keyboard=True
-    )
-    
-    await message.answer(
-        f"🎉 Твой тест готов! Отправь эту ссылку другу, чтобы разыграть его:\n{link}\n\n"
-        "Когда друг пройдёт тест, его ответы придут тебе в личные сообщения.",
-        reply_markup=keyboard
-    )
+    await show_main_menu(user_id, f"🎉 Твой тест готов! Отправь эту ссылку другу, чтобы разыграть его:\n{link}\n\nКогда друг пройдёт тест, его ответы придут тебе в личные сообщения.")
 
 # ---------- Отправка вопроса (с поддержкой свободных вопросов и предупреждением 18+) ----------
 async def send_question(user_id: int):
@@ -130,7 +134,7 @@ async def send_question(user_id: int):
     if not session:
         return
 
-    # Предупреждение 18+ (один раз)
+    # Если предупреждение 18+ ещё не было показано
     if not session.get("warned", False):
         keyboard = InlineKeyboardBuilder()
         keyboard.add(InlineKeyboardButton(text="Продолжить", callback_data="continue_18"))
@@ -151,7 +155,7 @@ async def send_question(user_id: int):
     q = questions[q_index]
     text = f"Вопрос {q_index+1} из {len(questions)}:\n{q['text']}"
 
-    # Отправляем сообщение с вопросом и сохраняем его ID для последующего удаления
+    # Проверяем тип вопроса
     if q.get("type") == "free":
         session["waiting_custom"] = True
         sent_msg = await bot.send_message(user_id, text)
@@ -161,7 +165,7 @@ async def send_question(user_id: int):
         for opt in q["options"]:
             builder.add(InlineKeyboardButton(text=opt, callback_data=f"ans_{opt}"))
         builder.add(InlineKeyboardButton(text="✍️ Свой вариант", callback_data="ans_custom"))
-        builder.adjust(2)   # две колонки
+        builder.adjust(2)  # Две колонки
         sent_msg = await bot.send_message(user_id, text, reply_markup=builder.as_markup())
         session["last_bot_message_id"] = sent_msg.message_id
 
@@ -205,23 +209,20 @@ async def handle_answer(callback: types.CallbackQuery):
     if data.startswith("ans_"):
         answer = data[4:]
         if answer == "custom":
-            # Пользователь выбрал "Свой вариант"
             await callback.message.answer("Напиши свой вариант ответа:")
             session["waiting_custom"] = True
             await callback.answer()
             return
         else:
-            # Обычный ответ по кнопке
             session["answers"].append(answer)
             session["current_q"] += 1
-            # Удаляем сообщение бота с вопросом
             await callback.message.delete()
             await send_question(user_id)
             await callback.answer()
     else:
         await callback.answer()
 
-# ---------- Обработка текстовых сообщений ----------
+# ---------- Обработка текстовых сообщений (свободный ответ) ----------
 @dp.message()
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
@@ -252,7 +253,8 @@ async def handle_text(message: types.Message):
             await message.answer("Пожалуйста, введи текст ответа.")
         return
     else:
-        await message.answer("Используй /start, чтобы создать тест или пройти по ссылке.")
+        # Если нет активной сессии, показываем главное меню
+        await show_main_menu(user_id, "Используй /start, чтобы создать тест или пройти по ссылке.")
 
 # ---------- Отправка счёта (инвойса) на Telegram Stars (для доната) ----------
 async def send_invoice(message: types.Message, amount: int):
@@ -366,6 +368,8 @@ async def save_custom_test(user_id: int, questions_list):
         "Когда друг пройдёт тест, его ответы придут вам в личные сообщения.",
         reply_markup=keyboard.as_markup()
     )
+    # После создания кастомного теста показываем главное меню
+    await show_main_menu(user_id, "🎉 Тест создан! Теперь вы можете поделиться ссылкой или создать новый.")
 
 # ---------- Завершение обычного теста, отправка результата и выдача новой ссылки + кнопка доната ----------
 async def finish_test(user_id: int):
@@ -407,6 +411,9 @@ async def finish_test(user_id: int):
         "Отправь её кому хочешь и получишь его ответы!",
         reply_markup=keyboard.as_markup()
     )
+
+    # После завершения теста показываем главное меню
+    await show_main_menu(user_id, "🎉 Ты прошел тест! Теперь можешь создать свой собственный тест или поделиться ссылкой с другом.")
 
 # ---------- HTTP-сервер для Render ----------
 async def health(request):
