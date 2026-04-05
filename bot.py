@@ -21,7 +21,7 @@ BOT_USERNAME = None
 user_sessions = {}
 custom_sessions = {}
 
-OWNER_ID = 1347045944  # ЗАМЕНИ НА СВОЙ ID
+OWNER_ID = 123456789  # ЗАМЕНИТЕ НА ВАШ TELEGRAM ID
 
 # ---------- Команда /privacy ----------
 @dp.message(Command("privacy"))
@@ -112,7 +112,8 @@ async def cmd_start(message: types.Message):
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📜 Политика")],
-            [KeyboardButton(text="✨ Создать свой тест")]
+            [KeyboardButton(text="✨ Создать свой тест")],
+            [KeyboardButton(text="🔔 Бонус (скоро)")]   # заглушка
         ],
         resize_keyboard=True
     )
@@ -129,7 +130,7 @@ async def send_question(user_id: int):
     if not session:
         return
 
-    # Если предупреждение 18+ ещё не было показано
+    # Предупреждение 18+ (один раз)
     if not session.get("warned", False):
         keyboard = InlineKeyboardBuilder()
         keyboard.add(InlineKeyboardButton(text="Продолжить", callback_data="continue_18"))
@@ -150,18 +151,19 @@ async def send_question(user_id: int):
     q = questions[q_index]
     text = f"Вопрос {q_index+1} из {len(questions)}:\n{q['text']}"
 
-    # Проверяем тип вопроса
+    # Отправляем сообщение с вопросом и сохраняем его ID для последующего удаления
     if q.get("type") == "free":
-        # Свободный вопрос: ждём текст
         session["waiting_custom"] = True
-        await bot.send_message(user_id, text)
+        sent_msg = await bot.send_message(user_id, text)
+        session["last_bot_message_id"] = sent_msg.message_id
     else:
-        # Вопрос с вариантами
         builder = InlineKeyboardBuilder()
         for opt in q["options"]:
             builder.add(InlineKeyboardButton(text=opt, callback_data=f"ans_{opt}"))
         builder.add(InlineKeyboardButton(text="✍️ Свой вариант", callback_data="ans_custom"))
-        await bot.send_message(user_id, text, reply_markup=builder.as_markup())
+        builder.adjust(2)   # две колонки
+        sent_msg = await bot.send_message(user_id, text, reply_markup=builder.as_markup())
+        session["last_bot_message_id"] = sent_msg.message_id
 
 # ---------- Обработка нажатий на кнопки ----------
 @dp.callback_query()
@@ -203,13 +205,16 @@ async def handle_answer(callback: types.CallbackQuery):
     if data.startswith("ans_"):
         answer = data[4:]
         if answer == "custom":
+            # Пользователь выбрал "Свой вариант"
             await callback.message.answer("Напиши свой вариант ответа:")
             session["waiting_custom"] = True
             await callback.answer()
             return
         else:
+            # Обычный ответ по кнопке
             session["answers"].append(answer)
             session["current_q"] += 1
+            # Удаляем сообщение бота с вопросом
             await callback.message.delete()
             await send_question(user_id)
             await callback.answer()
@@ -231,6 +236,13 @@ async def handle_text(message: types.Message):
     if session and session.get("waiting_custom"):
         custom_answer = message.text.strip()
         if custom_answer:
+            # Удаляем предыдущее сообщение бота с вопросом
+            last_msg_id = session.get("last_bot_message_id")
+            if last_msg_id:
+                try:
+                    await bot.delete_message(user_id, last_msg_id)
+                except Exception:
+                    pass
             session["answers"].append(custom_answer)
             session["current_q"] += 1
             session["waiting_custom"] = False
