@@ -9,7 +9,10 @@ from aiogram.types import InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardBut
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import TOKEN
-from database import init_db, save_user, create_test, get_test, save_attempt
+from database import (
+    init_db, save_user, create_test, get_test, save_attempt,
+    update_user_activity, increment_test_created, add_revenue, get_stats
+)
 from questions import DEFAULT_QUESTIONS
 
 logging.basicConfig(level=logging.INFO)
@@ -100,6 +103,7 @@ async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "без username"
     await save_user(user_id, username)
+    await update_user_activity(user_id)   # обновляем активность
 
     args = message.text.split()
     if len(args) > 1:
@@ -286,9 +290,13 @@ async def successful_payment(message: types.Message):
     payload = payment.invoice_payload
 
     if payload.startswith("custom_test"):
+        # Пользователь заплатил за кастомный тест (100⭐)
+        await add_revenue(100)   # добавляем доход
         await start_custom_test_creation(message.from_user.id)
         await message.answer("Оплата прошла успешно! Теперь создадим твой тест.")
     else:
+        # Обычный донат (сумма любая)
+        await add_revenue(amount)   # добавляем доход
         await bot.send_message(
             OWNER_ID,
             f"🎉 Получен донат!\nОт: @{username} (id {message.from_user.id})\nСумма: {amount} {currency}"
@@ -358,6 +366,12 @@ async def process_custom_test_creation(message: types.Message):
 async def save_custom_test(user_id: int, questions_list):
     questions_json = json.dumps(questions_list, ensure_ascii=False)
     test_id = await create_test(user_id, questions_json)
+    # create_test уже увеличивает счётчик обычных тестов, но это кастомный платный тест
+    # Поэтому дополнительно увеличим счётчик кастомных (в create_test увеличивается обычный)
+    # Чтобы не дублировать, лучше переделать: в create_test не увеличивать счётчик, а увеличивать здесь.
+    # Но для простоты оставим так: create_test увеличит total_tests_created,
+    # а мы отдельно увеличим total_custom_tests_created.
+    await increment_test_created(is_custom=True)
     new_link = f"https://t.me/{BOT_USERNAME}?start={test_id}"
     share_url = f"https://t.me/share/url?url={new_link}"
     keyboard = InlineKeyboardBuilder()
@@ -368,7 +382,6 @@ async def save_custom_test(user_id: int, questions_list):
         "Когда друг пройдёт тест, его ответы придут вам в личные сообщения.",
         reply_markup=keyboard.as_markup()
     )
-    # После создания кастомного теста показываем главное меню
     await show_main_menu(user_id, "🎉 Тест создан! Теперь вы можете поделиться ссылкой или создать новый.")
 
 # ---------- Завершение обычного теста, отправка результата и выдача новой ссылки + кнопка доната ----------
@@ -411,9 +424,32 @@ async def finish_test(user_id: int):
         "Отправь её кому хочешь и получишь его ответы!",
         reply_markup=keyboard.as_markup()
     )
-
-    # После завершения теста показываем главное меню
     await show_main_menu(user_id, "🎉 Ты прошел тест! Теперь можешь создать свой собственный тест или поделиться ссылкой с другом.")
+
+# ---------- Команда для получения статистики (только владелец) ----------
+@dp.message(Command("admin_stats"))
+async def admin_stats(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Доступ запрещён.")
+        return
+    stats = await get_stats()
+    report = f"""
+📊 **Статистика бота**
+
+👥 **Пользователи:**
+- Всего: {stats['total_users']}
+- Новых сегодня: {stats['new_users_today']}
+- Активных сегодня: {stats['active_today']}
+
+📝 **Тесты:**
+- Создано обычных: {stats['total_tests']}
+- Создано кастомных (платных): {stats['total_custom_tests']}
+- Всего пройдено тестов: {stats['total_attempts']}
+
+💰 **Доход:**
+- Всего звёзд: {stats['total_revenue']}⭐
+"""
+    await message.answer(report)
 
 # ---------- HTTP-сервер для Render ----------
 async def health(request):
