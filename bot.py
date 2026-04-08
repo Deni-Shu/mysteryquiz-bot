@@ -1,7 +1,8 @@
 import asyncio
 import json
 import logging
-from aiohttp import web
+import os
+from aiohttp import web, ClientSession
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
@@ -24,9 +25,10 @@ BOT_USERNAME = None
 user_sessions = {}
 custom_sessions = {}
 
-OWNER_ID = 1347045944  # ЗАМЕНИТЕ НА СВОЙ ID
+OWNER_ID = 1347045944  # Ваш Telegram ID
 
-# ---------- Команда статистики (ДОЛЖНА БЫТЬ ПЕРВОЙ) ----------
+# ========== КОМАНДЫ ==========
+
 @dp.message(Command("admin_stats"))
 async def admin_stats(message: types.Message):
     if message.from_user.id != OWNER_ID:
@@ -50,8 +52,7 @@ async def admin_stats(message: types.Message):
 - Всего звёзд: {stats['total_revenue']}⭐
 """
     await message.answer(report)
-    
-# ---------- Команда /privacy ----------
+
 @dp.message(Command("privacy"))
 async def cmd_privacy(message: types.Message):
     privacy_text = """
@@ -84,17 +85,35 @@ async def cmd_privacy(message: types.Message):
 """
     await message.answer(privacy_text)
 
-# ---------- Обработчик кнопки "Политика" ----------
+@dp.message(Command("about"))
+async def about_bot(message: types.Message):
+    about_text = """
+ℹ️ *О боте*
+
+Ответь на 13 вопросов и узнай свою пошлость!
+
+🎯 *Возможности:*
+• Бесплатный тест (13 вопросов)
+• ✨ *Создать свой тест* — 100⭐
+• ☕ *Поддержать донатом* (20, 50, 100⭐)
+
+🔞 *18+*
+
+📜 Политика: /privacy
+
+👉 *Как начать?* Отправь /start
+"""
+    await message.answer(about_text, parse_mode="Markdown")
+
+# ---------- Обработчики кнопок ----------
 @dp.message(lambda message: message.text == "📜 Политика")
 async def privacy_button(message: types.Message):
     await cmd_privacy(message)
 
-# ---------- Кнопка "Бонус за подписку" (пока неактивна) ----------
 @dp.message(lambda message: message.text == "🔔 Бонус за подписку")
 async def bonus_button(message: types.Message):
     await message.answer("🔧 Функция временно недоступна. Скоро появится!")
 
-# ---------- Обработчик кнопки "Создать свой тест" (платный) ----------
 @dp.message(lambda message: message.text == "✨ Создать свой тест")
 async def create_custom_test(message: types.Message):
     await bot.send_invoice(
@@ -110,7 +129,6 @@ async def create_custom_test(message: types.Message):
         need_email=False,
     )
 
-# ---------- Показать главное меню ----------
 async def show_main_menu(user_id: int, text: str = "🎉 Главное меню"):
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
@@ -128,7 +146,7 @@ async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "без username"
     await save_user(user_id, username)
-    await update_user_activity(user_id)   # обновляем активность
+    await update_user_activity(user_id)
 
     args = message.text.split()
     if len(args) > 1:
@@ -150,26 +168,24 @@ async def cmd_start(message: types.Message):
             await message.answer("❌ Такой тест не найден.")
             return
 
-    # Обычный запуск: создаём новый тест и показываем главное меню
+    # Обычный /start: создаём тест и показываем меню
     questions_json = json.dumps(DEFAULT_QUESTIONS, ensure_ascii=False)
     test_id = await create_test(user_id, questions_json)
     link = f"https://t.me/{BOT_USERNAME}?start={test_id}"
-    
-    await show_main_menu(user_id, f"🎉 Твой тест готов! Отправь эту ссылку другу, чтобы разыграть его:\n{link}\n\nКогда друг пройдёт тест, его ответы придут тебе в личные сообщения.")
+    await show_main_menu(user_id, f"🎉 Твой тест готов! Отправь эту ссылку другу:\n{link}\n\nКогда друг пройдёт тест, его ответы придут тебе.")
 
-# ---------- Отправка вопроса (с поддержкой свободных вопросов и предупреждением 18+) ----------
+# ---------- Отправка вопроса ----------
 async def send_question(user_id: int):
     session = user_sessions.get(user_id)
     if not session:
         return
 
-    # Если предупреждение 18+ ещё не было показано
     if not session.get("warned", False):
         keyboard = InlineKeyboardBuilder()
         keyboard.add(InlineKeyboardButton(text="Продолжить", callback_data="continue_18"))
         await bot.send_message(
             user_id,
-            "🔞 Внимание! Этот тест содержит вопросы для взрослых (18+). Продолжая, вы подтверждаете, что вам есть 18 лет.",
+            "🔞 Внимание! Тест содержит вопросы для взрослых (18+). Продолжая, вы подтверждаете, что вам есть 18 лет.",
             reply_markup=keyboard.as_markup()
         )
         session["warned"] = True
@@ -184,7 +200,6 @@ async def send_question(user_id: int):
     q = questions[q_index]
     text = f"Вопрос {q_index+1} из {len(questions)}:\n{q['text']}"
 
-    # Проверяем тип вопроса
     if q.get("type") == "free":
         session["waiting_custom"] = True
         sent_msg = await bot.send_message(user_id, text)
@@ -194,27 +209,23 @@ async def send_question(user_id: int):
         for opt in q["options"]:
             builder.add(InlineKeyboardButton(text=opt, callback_data=f"ans_{opt}"))
         builder.add(InlineKeyboardButton(text="✍️ Свой вариант", callback_data="ans_custom"))
-        builder.adjust(2)  # Две колонки
+        builder.adjust(2)
         sent_msg = await bot.send_message(user_id, text, reply_markup=builder.as_markup())
         session["last_bot_message_id"] = sent_msg.message_id
 
-# ---------- Обработка нажатий на кнопки ----------
+# ---------- Обработка нажатий ----------
 @dp.callback_query()
 async def handle_answer(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     session = user_sessions.get(user_id)
     data = callback.data
 
-    # Обработка доната
     if data == "donate_show":
         keyboard = InlineKeyboardBuilder()
         keyboard.add(InlineKeyboardButton(text="20⭐", callback_data="donate_20"))
         keyboard.add(InlineKeyboardButton(text="50⭐", callback_data="donate_50"))
         keyboard.add(InlineKeyboardButton(text="100⭐", callback_data="donate_100"))
-        await callback.message.answer(
-            "Выбери сумму поддержки (в Telegram Stars):",
-            reply_markup=keyboard.as_markup()
-        )
+        await callback.message.answer("Выбери сумму поддержки:", reply_markup=keyboard.as_markup())
         await callback.answer()
         return
     elif data.startswith("donate_"):
@@ -223,7 +234,6 @@ async def handle_answer(callback: types.CallbackQuery):
         await callback.answer()
         return
 
-    # Обработка кнопки "Продолжить" после предупреждения 18+
     if data == "continue_18":
         if session:
             await callback.message.delete()
@@ -251,22 +261,19 @@ async def handle_answer(callback: types.CallbackQuery):
     else:
         await callback.answer()
 
-# ---------- Обработка текстовых сообщений (свободный ответ) ----------
+# ---------- Обработка текста ----------
 @dp.message()
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
 
-    # Приоритет 1: сбор кастомного теста
     if user_id in custom_sessions:
         await process_custom_test_creation(message)
         return
 
-    # Приоритет 2: прохождение теста (свободный ответ)
     session = user_sessions.get(user_id)
     if session and session.get("waiting_custom"):
         custom_answer = message.text.strip()
         if custom_answer:
-            # Удаляем предыдущее сообщение бота с вопросом
             last_msg_id = session.get("last_bot_message_id")
             if last_msg_id:
                 try:
@@ -282,15 +289,14 @@ async def handle_text(message: types.Message):
             await message.answer("Пожалуйста, введи текст ответа.")
         return
     else:
-        # Если нет активной сессии, показываем главное меню
         await show_main_menu(user_id, "Используй /start, чтобы создать тест или пройти по ссылке.")
 
-# ---------- Отправка счёта (инвойса) на Telegram Stars (для доната) ----------
+# ---------- Платежи ----------
 async def send_invoice(message: types.Message, amount: int):
     await bot.send_invoice(
         chat_id=message.chat.id,
         title="Поддержка автора ☕",
-        description="Спасибо, что хотите поддержать проект!",
+        description="Спасибо за поддержку!",
         payload=f"donation_{amount}",
         currency="XTR",
         prices=[LabeledPrice(label="Звёзды", amount=amount)],
@@ -300,12 +306,10 @@ async def send_invoice(message: types.Message, amount: int):
         need_email=False,
     )
 
-# ---------- Обработка предварительного запроса на оплату ----------
 @dp.pre_checkout_query()
 async def pre_checkout(pre_checkout: PreCheckoutQuery):
     await bot.answer_pre_checkout_query(pre_checkout.id, ok=True)
 
-# ---------- Обработка успешной оплаты ----------
 @dp.message(lambda m: m.successful_payment is not None)
 async def successful_payment(message: types.Message):
     payment = message.successful_payment
@@ -315,20 +319,15 @@ async def successful_payment(message: types.Message):
     payload = payment.invoice_payload
 
     if payload.startswith("custom_test"):
-        # Пользователь заплатил за кастомный тест (100⭐)
-        await add_revenue(100)   # добавляем доход
+        await add_revenue(100)
         await start_custom_test_creation(message.from_user.id)
         await message.answer("Оплата прошла успешно! Теперь создадим твой тест.")
     else:
-        # Обычный донат (сумма любая)
-        await add_revenue(amount)   # добавляем доход
-        await bot.send_message(
-            OWNER_ID,
-            f"🎉 Получен донат!\nОт: @{username} (id {message.from_user.id})\nСумма: {amount} {currency}"
-        )
-        await message.answer(f"Спасибо за поддержку! ❤️ Ваши {amount} звёзд помогут развитию бота.")
+        await add_revenue(amount)
+        await bot.send_message(OWNER_ID, f"🎉 Получен донат!\nОт: @{username}\nСумма: {amount} {currency}")
+        await message.answer(f"Спасибо за поддержку! ❤️")
 
-# ---------- Начало сбора кастомного теста (вызывается после оплаты) ----------
+# ---------- Кастомные тесты ----------
 async def start_custom_test_creation(user_id: int):
     custom_sessions[user_id] = {
         "state": "ask_question_count",
@@ -336,11 +335,7 @@ async def start_custom_test_creation(user_id: int):
         "current_q": 0,
         "questions": []
     }
-    await bot.send_message(
-        user_id,
-        "Сколько вопросов будет в тесте? (от 1 до 10)\n\n"
-        "Каждый вопрос будет с вариантами ответов. Пользователь также сможет написать свой вариант."
-    )
+    await bot.send_message(user_id, "Сколько вопросов? (от 1 до 10)\nКаждый вопрос будет с вариантами ответов.")
 
 async def process_custom_test_creation(message: types.Message):
     user_id = message.from_user.id
@@ -358,24 +353,21 @@ async def process_custom_test_creation(message: types.Message):
             else:
                 await message.answer("Введите число от 1 до 10.")
         except ValueError:
-            await message.answer("Пожалуйста, введите целое число.")
+            await message.answer("Введите целое число.")
 
     elif state == "ask_question_text":
         session["current_question"] = {"text": message.text.strip()}
         session["state"] = "ask_options"
-        await message.answer(
-            "Введите варианты ответов через запятую (от 2 до 6 вариантов).\n\n"
-            "Пример: Дружба, Любовь, Приключения"
-        )
+        await message.answer("Введите варианты через запятую (2–6). Пример: Дружба, Любовь, Приключения")
 
     elif state == "ask_options":
         raw = message.text.strip()
         options = [opt.strip() for opt in raw.split(",") if opt.strip()]
         if len(options) < 2:
-            await message.answer("Нужно хотя бы 2 варианта. Попробуйте ещё раз.")
+            await message.answer("Нужно хотя бы 2 варианта.")
             return
         if len(options) > 6:
-            await message.answer("Максимум 6 вариантов. Пожалуйста, введите не больше 6.")
+            await message.answer("Максимум 6 вариантов.")
             return
         session["current_question"]["options"] = options
         session["questions"].append(session["current_question"])
@@ -387,29 +379,18 @@ async def process_custom_test_creation(message: types.Message):
             session["state"] = "ask_question_text"
             await message.answer(f"Вопрос {session['current_q']} из {session['total_questions']}. Введите текст вопроса:")
 
-# ---------- Сохранение кастомного теста и выдача ссылки ----------
 async def save_custom_test(user_id: int, questions_list):
     questions_json = json.dumps(questions_list, ensure_ascii=False)
     test_id = await create_test(user_id, questions_json)
-    # create_test уже увеличивает счётчик обычных тестов, но это кастомный платный тест
-    # Поэтому дополнительно увеличим счётчик кастомных (в create_test увеличивается обычный)
-    # Чтобы не дублировать, лучше переделать: в create_test не увеличивать счётчик, а увеличивать здесь.
-    # Но для простоты оставим так: create_test увеличит total_tests_created,
-    # а мы отдельно увеличим total_custom_tests_created.
     await increment_test_created(is_custom=True)
     new_link = f"https://t.me/{BOT_USERNAME}?start={test_id}"
     share_url = f"https://t.me/share/url?url={new_link}"
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(text="📤 Поделиться", url=share_url))
-    await bot.send_message(
-        user_id,
-        f"✨ Ваш тест готов! Отправьте эту ссылку другу, чтобы разыграть его:\n{new_link}\n\n"
-        "Когда друг пройдёт тест, его ответы придут вам в личные сообщения.",
-        reply_markup=keyboard.as_markup()
-    )
-    await show_main_menu(user_id, "🎉 Тест создан! Теперь вы можете поделиться ссылкой или создать новый.")
+    await bot.send_message(user_id, f"✨ Ваш тест готов! Ссылка:\n{new_link}", reply_markup=keyboard.as_markup())
+    await show_main_menu(user_id, "🎉 Тест создан! Можете поделиться ссылкой или создать новый.")
 
-# ---------- Завершение обычного теста, отправка результата и выдача новой ссылки + кнопка доната ----------
+# ---------- Завершение обычного теста ----------
 async def finish_test(user_id: int):
     session = user_sessions.pop(user_id, None)
     if not session:
@@ -432,11 +413,10 @@ async def finish_test(user_id: int):
         result_text += f"{i}. {q['text']}\n   ➡️ {ans}\n"
     await bot.send_message(creator_id, result_text)
 
-    # Создаём новую ссылку для прошедшего (обычный тест)
+    # Новая ссылка для прошедшего
     questions_json = json.dumps(questions, ensure_ascii=False)
     new_test_id = await create_test(user_id, questions_json)
     new_link = f"https://t.me/{BOT_USERNAME}?start={new_test_id}"
-
     share_url = f"https://t.me/share/url?url={new_link}"
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(text="📤 Поделиться", url=share_url))
@@ -444,14 +424,25 @@ async def finish_test(user_id: int):
 
     await bot.send_message(
         user_id,
-        f"😄 Ха-ха, тебя разыграли!\n"
-        f"Теперь ты можешь разыграть друга — вот твоя ссылка:\n{new_link}\n\n"
-        "Отправь её кому хочешь и получишь его ответы!",
+        f"😄 Ха-ха, тебя разыграли!\nТеперь твоя ссылка:\n{new_link}\n\nОтправь её другу!",
         reply_markup=keyboard.as_markup()
     )
-    await show_main_menu(user_id, "🎉 Ты прошел тест! Теперь можешь создать свой собственный тест или поделиться ссылкой с другом.")
+    await show_main_menu(user_id, "🎉 Ты прошёл тест! Теперь можешь создать свой тест или поделиться ссылкой.")
 
-    await message.answer(report)
+# ---------- Self-ping (чтобы бот не засыпал) ----------
+async def self_ping():
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not render_url:
+        return
+    ping_url = f"{render_url}/"
+    while True:
+        try:
+            async with ClientSession() as session:
+                async with session.get(ping_url) as resp:
+                    print(f"Self-ping: {resp.status}")
+        except Exception as e:
+            print(f"Self-ping error: {e}")
+        await asyncio.sleep(600)  # каждые 10 минут
 
 # ---------- HTTP-сервер для Render ----------
 async def health(request):
@@ -463,6 +454,9 @@ async def main():
     me = await bot.get_me()
     BOT_USERNAME = me.username
     print(f"Бот запущен: @{BOT_USERNAME}")
+
+    # Запускаем self-ping
+    asyncio.create_task(self_ping())
 
     polling_task = asyncio.create_task(dp.start_polling(bot))
 
