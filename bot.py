@@ -451,29 +451,6 @@ async def finish_test(user_id: int):
     )
     await show_main_menu(user_id, "🎉 Ты прошел тест! Теперь можешь создать свой собственный тест или поделиться ссылкой с другом.")
 
-# ---------- Команда для получения статистики (только владелец) ----------
-@dp.message(Command("admin_stats"))
-async def admin_stats(message: types.Message):
-    if message.from_user.id != OWNER_ID:
-        await message.answer("⛔ Доступ запрещён.")
-        return
-    stats = await get_stats()
-    report = f"""
-📊 **Статистика бота**
-
-👥 **Пользователи:**
-- Всего: {stats['total_users']}
-- Новых сегодня: {stats['new_users_today']}
-- Активных сегодня: {stats['active_today']}
-
-📝 **Тесты:**
-- Создано обычных: {stats['total_tests']}
-- Создано кастомных (платных): {stats['total_custom_tests']}
-- Всего пройдено тестов: {stats['total_attempts']}
-
-💰 **Доход:**
-- Всего звёзд: {stats['total_revenue']}⭐
-"""
     await message.answer(report)
 
 # ---------- HTTP-сервер для Render ----------
