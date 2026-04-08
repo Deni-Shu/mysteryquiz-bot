@@ -26,6 +26,31 @@ custom_sessions = {}
 
 OWNER_ID = 1347045944  # ЗАМЕНИТЕ НА СВОЙ ID
 
+# ---------- Команда статистики (ДОЛЖНА БЫТЬ ПЕРВОЙ) ----------
+@dp.message(Command("admin_stats"))
+async def admin_stats(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Доступ запрещён.")
+        return
+    stats = await get_stats()
+    report = f"""
+📊 **Статистика бота**
+
+👥 **Пользователи:**
+- Всего: {stats['total_users']}
+- Новых сегодня: {stats['new_users_today']}
+- Активных сегодня: {stats['active_today']}
+
+📝 **Тесты:**
+- Создано обычных: {stats['total_tests']}
+- Создано кастомных (платных): {stats['total_custom_tests']}
+- Всего пройдено тестов: {stats['total_attempts']}
+
+💰 **Доход:**
+- Всего звёзд: {stats['total_revenue']}⭐
+"""
+    await message.answer(report)
+    
 # ---------- Команда /privacy ----------
 @dp.message(Command("privacy"))
 async def cmd_privacy(message: types.Message):
