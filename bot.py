@@ -26,17 +26,20 @@ OWNER_ID = 1347045944  # Ваш Telegram ID
 
 # ---- Вспомогательные функции для бонусов ----
 async def has_free_test(user_id: int) -> bool:
+    import aiosqlite
     async with aiosqlite.connect("test_bot.db") as db:
         async with db.execute("SELECT free_test_granted FROM users WHERE user_id = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
             return row and row[0] == 1
 
 async def grant_free_test(user_id: int):
+    import aiosqlite
     async with aiosqlite.connect("test_bot.db") as db:
         await db.execute("UPDATE users SET free_test_granted = 1 WHERE user_id = ?", (user_id,))
         await db.commit()
 
 async def use_free_test(user_id: int):
+    import aiosqlite
     async with aiosqlite.connect("test_bot.db") as db:
         await db.execute("UPDATE users SET free_test_granted = 0 WHERE user_id = ?", (user_id,))
         await db.commit()
@@ -89,6 +92,7 @@ async def broadcast(message: types.Message):
     if not text:
         await message.answer("Напиши текст рассылки после команды.")
         return
+    import aiosqlite
     async with aiosqlite.connect("test_bot.db") as db:
         async with db.execute("SELECT user_id FROM users") as cursor:
             users = await cursor.fetchall()
@@ -547,6 +551,13 @@ async def finish_test(user_id: int):
 async def health(request):
     return web.Response(text="OK")
 
+async def webhook_handler(request):
+    # Получаем обновление в виде JSON
+    update = await request.json()
+    # Передаём его диспетчеру
+    await dp.feed_webhook_update(bot, types.Update(**update))
+    return web.Response(text="OK")
+
 async def main():
     global BOT_USERNAME
     await init_db()
@@ -568,7 +579,7 @@ async def main():
 
     # Запускаем веб-сервер для приёма вебхуков
     app = web.Application()
-    app.router.add_post("/webhook", dp.webhook_handler())
+    app.router.add_post("/webhook", webhook_handler)
     app.router.add_get("/", health)
 
     runner = web.AppRunner(app)
