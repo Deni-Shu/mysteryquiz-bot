@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import aiosqlite
 from aiohttp import web
 
 from aiogram import Bot, Dispatcher, types
@@ -26,25 +27,22 @@ OWNER_ID = 1347045944  # Ваш Telegram ID
 
 # ---- Вспомогательные функции для бонусов ----
 async def has_free_test(user_id: int) -> bool:
-    import aiosqlite
     async with aiosqlite.connect("test_bot.db") as db:
         async with db.execute("SELECT free_test_granted FROM users WHERE user_id = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
             return row and row[0] == 1
 
 async def grant_free_test(user_id: int):
-    import aiosqlite
     async with aiosqlite.connect("test_bot.db") as db:
         await db.execute("UPDATE users SET free_test_granted = 1 WHERE user_id = ?", (user_id,))
         await db.commit()
 
 async def use_free_test(user_id: int):
-    import aiosqlite
     async with aiosqlite.connect("test_bot.db") as db:
         await db.execute("UPDATE users SET free_test_granted = 0 WHERE user_id = ?", (user_id,))
         await db.commit()
 
-# ---------- Админские команды ----------
+# ---------- Админские команды (ДОЛЖНЫ БЫТЬ ПЕРВЫМИ) ----------
 @dp.message(Command("admin_stats"))
 async def admin_stats(message: types.Message):
     if message.from_user.id != OWNER_ID:
@@ -92,7 +90,6 @@ async def broadcast(message: types.Message):
     if not text:
         await message.answer("Напиши текст рассылки после команды.")
         return
-    import aiosqlite
     async with aiosqlite.connect("test_bot.db") as db:
         async with db.execute("SELECT user_id FROM users") as cursor:
             users = await cursor.fetchall()
@@ -106,7 +103,7 @@ async def broadcast(message: types.Message):
             pass
     await message.answer(f"Рассылка завершена. Отправлено {count} пользователям.")
 
-# ---------- Команды и кнопки ----------
+# ---------- Публичные команды ----------
 @dp.message(Command("privacy"))
 async def cmd_privacy(message: types.Message):
     privacy_text = """
@@ -547,15 +544,8 @@ async def finish_test(user_id: int):
     )
     await show_main_menu(user_id, "🎉 Ты прошёл тест! Теперь можешь создать свой тест или поделиться ссылкой.")
 
-# ---------- HTTP-сервер для webhook ----------
+# ---------- HTTP-сервер для Render (health check) ----------
 async def health(request):
-    return web.Response(text="OK")
-
-async def webhook_handler(request):
-    # Получаем обновление в виде JSON
-    update = await request.json()
-    # Передаём его диспетчеру
-    await dp.feed_webhook_update(bot, types.Update(**update))
     return web.Response(text="OK")
 
 async def main():
@@ -565,31 +555,24 @@ async def main():
     BOT_USERNAME = me.username
     print(f"Бот запущен: @{BOT_USERNAME}")
 
-    # Получаем внешний URL от Render
-    render_url = os.environ.get("RENDER_EXTERNAL_URL")
-    if not render_url:
-        print("Ошибка: RENDER_EXTERNAL_URL не задан. Бот не может установить webhook.")
-        return
-    webhook_url = f"{render_url}/webhook"
-
-    # Удаляем старый webhook и устанавливаем новый
+    # Принудительно удаляем вебхук
     await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(webhook_url)
-    print(f"Webhook установлен: {webhook_url}")
+    print("Webhook удалён")
+    await asyncio.sleep(1)
 
-    # Запускаем веб-сервер для приёма вебхуков
+    # Запускаем polling
+    polling_task = asyncio.create_task(dp.start_polling(bot))
+
+    # HTTP-сервер для health check
     app = web.Application()
-    app.router.add_post("/webhook", webhook_handler)
     app.router.add_get("/", health)
-
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", 10000)
     await site.start()
-    print("HTTP-сервер запущен на порту 10000 (webhook)")
+    print("HTTP-сервер запущен на порту 10000 (health check)")
 
-    # Бесконечно ждём (вебхук работает сам)
-    await asyncio.Event().wait()
+    await polling_task
 
 if __name__ == "__main__":
     asyncio.run(main())
