@@ -526,6 +526,21 @@ async def finish_test(user_id: int):
 async def health(request):
     return web.Response(text="OK")
 
+# Команда для получения файла базы данных (только для администратора)
+@dp.message(Command("getdb"))
+async def get_database_file(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Доступ запрещён.")
+        return
+    try:
+        # Отправляем файл test_bot.db администратору
+        await message.answer_document(
+            document=types.FSInputFile("test_bot.db"),
+            caption="📁 Файл базы данных бота"
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при отправке файла: {e}")
+
 async def main():
     global BOT_USERNAME
     await init_db()
