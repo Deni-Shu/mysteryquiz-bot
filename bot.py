@@ -4,11 +4,11 @@ import logging
 import os
 import aiosqlite
 from aiohttp import web
-
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
-from aiogram.types import InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery
+from aiogram.types import InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from config import TOKEN
 from database import init_db, save_user, create_test, get_test, save_attempt, update_user_activity, increment_test_created, add_revenue, get_stats
@@ -41,6 +41,18 @@ async def use_free_test(user_id: int):
     async with aiosqlite.connect("test_bot.db") as db:
         await db.execute("UPDATE users SET free_test_granted = 0 WHERE user_id = ?", (user_id,))
         await db.commit()
+
+# ---------- Команда для скачивания базы данных (только админ) ----------
+@dp.message(Command("getdb"))
+async def get_database_file(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Доступ запрещён.")
+        return
+    try:
+        file = FSInputFile("test_bot.db")
+        await message.answer_document(file, caption="📁 База данных бота")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
 # ---------- Админские команды ----------
 @dp.message(Command("admin_stats"))
@@ -82,6 +94,7 @@ async def give_bonus(message: types.Message):
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
+# ---------- Публичные команды ----------
 @dp.message(Command("privacy"))
 async def cmd_privacy(message: types.Message):
     privacy_text = """
@@ -346,6 +359,29 @@ async def handle_answer(callback: types.CallbackQuery):
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
 
+    # Принудительная обработка команд (страховка)
+    if message.text.startswith('/'):
+        command = message.text.split()[0].lower()
+        if command == '/getdb' and message.from_user.id == OWNER_ID:
+            await get_database_file(message)
+            return
+        if command == '/bonus' and message.from_user.id == OWNER_ID:
+            await give_bonus(message)
+            return
+        if command == '/admin_stats' and message.from_user.id == OWNER_ID:
+            await admin_stats(message)
+            return
+        if command == '/privacy':
+            await cmd_privacy(message)
+            return
+        if command == '/about':
+            await about_bot(message)
+            return
+        if command == '/start':
+            await cmd_start(message)
+            return
+        # Для всех остальных команд – ничего не делаем, просто игнорируем
+
     # Обработка истории
     session = user_sessions.get(user_id)
     if session and session.get("waiting_story"):
@@ -522,24 +558,9 @@ async def finish_test(user_id: int):
     )
     await show_main_menu(user_id, "🎉 Ты прошёл тест! Теперь можешь создать свой тест или поделиться ссылкой.")
 
-# ---------- HTTP-сервер для Render (health check) ----------
+# ---------- Запуск через webhook ----------
 async def health(request):
     return web.Response(text="OK")
-
-# Команда для получения файла базы данных (только для администратора)
-@dp.message(Command("getdb"))
-async def get_database_file(message: types.Message):
-    if message.from_user.id != OWNER_ID:
-        await message.answer("⛔ Доступ запрещён.")
-        return
-    try:
-        # Отправляем файл test_bot.db администратору
-        await message.answer_document(
-            document=types.FSInputFile("test_bot.db"),
-            caption="📁 Файл базы данных бота"
-        )
-    except Exception as e:
-        await message.answer(f"❌ Ошибка при отправке файла: {e}")
 
 async def main():
     global BOT_USERNAME
@@ -548,21 +569,38 @@ async def main():
     BOT_USERNAME = me.username
     print(f"Бот запущен: @{BOT_USERNAME}")
 
+    # Удаляем старый вебхук и все ожидающие обновления
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Webhook удалён")
-    await asyncio.sleep(1)
 
-    polling_task = asyncio.create_task(dp.start_polling(bot))
+    # Получаем внешний URL от Render
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not render_url:
+        print("Ошибка: RENDER_EXTERNAL_URL не задан. Бот не может установить webhook.")
+        return
+    webhook_url = f"{render_url}/webhook"
+    await bot.set_webhook(webhook_url)
+    print(f"Webhook установлен: {webhook_url}")
 
+    # Создаём aiohttp приложение
     app = web.Application()
     app.router.add_get("/", health)
+    
+    # Обработчик вебхука
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    webhook_requests_handler.register(app, path="/webhook")
+    
+    # Запускаем веб-сервер
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", 10000)
     await site.start()
-    print("HTTP-сервер запущен на порту 10000 (health check)")
+    print("HTTP-сервер запущен на порту 10000 (webhook)")
 
-    await polling_task
+    # Бесконечно ждём (вебхук работает сам)
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
