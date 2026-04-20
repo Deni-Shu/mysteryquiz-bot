@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import aiosqlite
 from aiohttp import web, ClientSession
 
 from aiogram import Bot, Dispatcher, types
@@ -10,10 +11,7 @@ from aiogram.types import InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardBut
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import TOKEN
-from database import (
-    init_db, save_user, create_test, get_test, save_attempt,
-    update_user_activity, increment_test_created, add_revenue, get_stats
-)
+from database import init_db, save_user, create_test, get_test, save_attempt, update_user_activity, increment_test_created, add_revenue, get_stats
 from questions import DEFAULT_QUESTIONS
 
 logging.basicConfig(level=logging.INFO)
@@ -27,8 +25,25 @@ custom_sessions = {}
 
 OWNER_ID = 1347045944  # Ваш Telegram ID
 
-# ========== КОМАНДЫ ==========
+# ---- Вспомогательные функции для бонусов (если их нет в database.py) ----
+async def has_free_test(user_id: int) -> bool:
+    async with aiosqlite.connect("test_bot.db") as db:
+        async with db.execute("SELECT free_test_granted FROM users WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row and row[0] == 1
 
+async def grant_free_test(user_id: int):
+    async with aiosqlite.connect("test_bot.db") as db:
+        await db.execute("UPDATE users SET free_test_granted = 1 WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+async def use_free_test(user_id: int):
+    async with aiosqlite.connect("test_bot.db") as db:
+        await db.execute("UPDATE users SET free_test_granted = 0 WHERE user_id = ?", (user_id,))
+        await db.commit()
+# --------------------------------------------------------------------
+
+# ---------- Команды и кнопки ----------
 @dp.message(Command("admin_stats"))
 async def admin_stats(message: types.Message):
     if message.from_user.id != OWNER_ID:
@@ -90,7 +105,7 @@ async def about_bot(message: types.Message):
     about_text = """
 ℹ️ *О боте*
 
-Ответь на 13 вопросов и узнай свою пошлость!
+Этот бот — шуточный розыгрыш друзей. Ты отправляешь ссылку → друг отвечает на вопросы → ты получаешь его ответы. А друг получает свою ссылку, чтобы разыграть следующего.
 
 🎯 *Возможности:*
 • Бесплатный тест (13 вопросов)
@@ -105,36 +120,125 @@ async def about_bot(message: types.Message):
 """
     await message.answer(about_text, parse_mode="Markdown")
 
-# ---------- Обработчики кнопок ----------
+# ---------- Админские команды ----------
+@dp.message(Command("bonus"))
+async def give_bonus(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Используй: /bonus user_id")
+        return
+    try:
+        user_id = int(args[1])
+        await grant_free_test(user_id)
+        await message.answer(f"✅ Бонус (бесплатный тест) выдан пользователю {user_id}")
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
+
+@dp.message(Command("broadcast"))
+async def broadcast(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    text = message.text.replace("/broadcast", "").strip()
+    if not text:
+        await message.answer("Напиши текст рассылки после команды.")
+        return
+    async with aiosqlite.connect("test_bot.db") as db:
+        async with db.execute("SELECT user_id FROM users") as cursor:
+            users = await cursor.fetchall()
+    count = 0
+    for (user_id,) in users:
+        try:
+            await bot.send_message(user_id, f"📢 *Новости проекта:*\n{text}", parse_mode="Markdown")
+            count += 1
+            await asyncio.sleep(0.05)
+        except:
+            pass
+    await message.answer(f"Рассылка завершена. Отправлено {count} пользователям.")
+
+# ---------- Кнопочные обработчики ----------
 @dp.message(lambda message: message.text == "📜 Политика")
 async def privacy_button(message: types.Message):
     await cmd_privacy(message)
 
 @dp.message(lambda message: message.text == "🔔 Бонус за подписку")
-async def bonus_button(message: types.Message):
-    await message.answer("🔧 Функция временно недоступна. Скоро появится!")
+async def subscribe_bonus(message: types.Message):
+    user_id = message.from_user.id
+    channel_username = "@po_sekretu_18"  # ЗАМЕНИТЕ НА ЮЗЕРНЕЙМ ВАШЕГО КАНАЛА
+    try:
+        member = await bot.get_chat_member(channel_username, user_id)
+        if member.status in ["creator", "administrator", "member"]:
+            if not await has_free_test(user_id):
+                await grant_free_test(user_id)
+                await message.answer("✅ Бонус за подписку получен! Вы можете создать один тест бесплатно (нажмите «✨ Создать свой тест»).")
+            else:
+                await message.answer("Вы уже получали бонус.")
+        else:
+            keyboard = InlineKeyboardBuilder()
+            keyboard.add(InlineKeyboardButton(text="📢 Подписаться", url=f"https://t.me/{channel_username[1:]}"))
+            await message.answer("Подпишитесь на канал, чтобы получить бесплатный тест:", reply_markup=keyboard.as_markup())
+    except Exception as e:
+        await message.answer(f"Ошибка проверки подписки: {e}. Попробуйте позже.")
+
+@dp.message(lambda message: message.text == "📝 Поделиться историей")
+async def ask_story(message: types.Message):
+    await message.answer("Напиши свою историю анонимно. Она может быть опубликована в нашем канале. Мы не редактируем, но оставляем право отклонить оскорбительный контент.\n\nОтправь текст одним сообщением:")
+    user_sessions[message.from_user.id] = {"waiting_story": True}
+
+@dp.message(lambda message: message.text == "❓ Команды")
+async def show_commands(message: types.Message):
+    commands_text = """
+❓ *Доступные команды*
+
+/start — создать новый тест и получить ссылку для розыгрыша
+/privacy — политика конфиденциальности
+/about — о боте
+
+📌 *Кнопки меню:*
+📜 Политика — правила обработки данных
+✨ Создать свой тест — за 100⭐
+🔔 Бонус за подписку — бесплатный тест за подписку на канал
+📝 Поделиться историей — отправить анонимную историю в наш канал
+❓ Команды — этот список
+
+✏️ Во время прохождения теста:
+- Выбирай варианты ответов или нажми «Свой вариант»
+- В свободных вопросах просто пиши ответ
+
+🔞 Контент 18+
+"""
+    await message.answer(commands_text, parse_mode="Markdown")
 
 @dp.message(lambda message: message.text == "✨ Создать свой тест")
 async def create_custom_test(message: types.Message):
-    await bot.send_invoice(
-        chat_id=message.chat.id,
-        title="Создание своего теста ✨",
-        description="Вы сможете задать до 10 вопросов с вариантами ответов.",
-        payload="custom_test_100",
-        currency="XTR",
-        prices=[LabeledPrice(label="Создание теста", amount=100)],
-        start_parameter="custom_test",
-        need_name=False,
-        need_phone_number=False,
-        need_email=False,
-    )
+    user_id = message.from_user.id
+    if await has_free_test(user_id):
+        await use_free_test(user_id)
+        await start_custom_test_creation(user_id)
+        await message.answer("🔓 Вы использовали бесплатный бонус. Создайте свой тест!")
+    else:
+        await bot.send_invoice(
+            chat_id=message.chat.id,
+            title="Создание своего теста ✨",
+            description="Вы сможете задать до 10 вопросов с вариантами ответов.",
+            payload="custom_test_100",
+            currency="XTR",
+            prices=[LabeledPrice(label="Создание теста", amount=100)],
+            start_parameter="custom_test",
+            need_name=False,
+            need_phone_number=False,
+            need_email=False,
+        )
 
 async def show_main_menu(user_id: int, text: str = "🎉 Главное меню"):
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📜 Политика")],
             [KeyboardButton(text="✨ Создать свой тест")],
-            [KeyboardButton(text="🔔 Бонус за подписку")]
+            [KeyboardButton(text="🔔 Бонус за подписку")],
+            [KeyboardButton(text="📝 Поделиться историей")],
+            [KeyboardButton(text="❓ Команды")]
         ],
         resize_keyboard=True
     )
@@ -168,7 +272,6 @@ async def cmd_start(message: types.Message):
             await message.answer("❌ Такой тест не найден.")
             return
 
-    # Обычный /start: создаём тест и показываем меню
     questions_json = json.dumps(DEFAULT_QUESTIONS, ensure_ascii=False)
     test_id = await create_test(user_id, questions_json)
     link = f"https://t.me/{BOT_USERNAME}?start={test_id}"
@@ -261,16 +364,29 @@ async def handle_answer(callback: types.CallbackQuery):
     else:
         await callback.answer()
 
-# ---------- Обработка текста ----------
+# ---------- Обработка текстовых сообщений (истории, свободные ответы) ----------
 @dp.message()
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
 
+    # Обработка истории
+    session = user_sessions.get(user_id)
+    if session and session.get("waiting_story"):
+        story = message.text.strip()
+        if len(story) < 10:
+            await message.answer("Слишком коротко. Напиши хотя бы 10 символов.")
+            return
+        await bot.send_message(OWNER_ID, f"📝 Новая история от анонима (id {user_id}):\n\n{story}")
+        await message.answer("✅ История отправлена на модерацию. Если она будет опубликована, вы получите бонус!")
+        del user_sessions[user_id]
+        return
+
+    # Сбор кастомного теста
     if user_id in custom_sessions:
         await process_custom_test_creation(message)
         return
 
-    session = user_sessions.get(user_id)
+    # Свободный ответ при прохождении теста
     if session and session.get("waiting_custom"):
         custom_answer = message.text.strip()
         if custom_answer:
@@ -278,7 +394,7 @@ async def handle_text(message: types.Message):
             if last_msg_id:
                 try:
                     await bot.delete_message(user_id, last_msg_id)
-                except Exception:
+                except:
                     pass
             session["answers"].append(custom_answer)
             session["current_q"] += 1
@@ -288,8 +404,9 @@ async def handle_text(message: types.Message):
         else:
             await message.answer("Пожалуйста, введи текст ответа.")
         return
-    else:
-        await show_main_menu(user_id, "Используй /start, чтобы создать тест или пройти по ссылке.")
+
+    # Если ничего не подошло
+    await show_main_menu(user_id, "Используй /start, чтобы создать тест или пройти по ссылке.")
 
 # ---------- Платежи ----------
 async def send_invoice(message: types.Message, amount: int):
@@ -413,7 +530,6 @@ async def finish_test(user_id: int):
         result_text += f"{i}. {q['text']}\n   ➡️ {ans}\n"
     await bot.send_message(creator_id, result_text)
 
-    # Новая ссылка для прошедшего
     questions_json = json.dumps(questions, ensure_ascii=False)
     new_test_id = await create_test(user_id, questions_json)
     new_link = f"https://t.me/{BOT_USERNAME}?start={new_test_id}"
@@ -429,7 +545,7 @@ async def finish_test(user_id: int):
     )
     await show_main_menu(user_id, "🎉 Ты прошёл тест! Теперь можешь создать свой тест или поделиться ссылкой.")
 
-# ---------- Self-ping (чтобы бот не засыпал) ----------
+# ---------- Self-ping ----------
 async def self_ping():
     render_url = os.environ.get("RENDER_EXTERNAL_URL")
     if not render_url:
@@ -442,9 +558,9 @@ async def self_ping():
                     print(f"Self-ping: {resp.status}")
         except Exception as e:
             print(f"Self-ping error: {e}")
-        await asyncio.sleep(600)  # каждые 10 минут
+        await asyncio.sleep(600)
 
-# ---------- HTTP-сервер для Render ----------
+# ---------- HTTP-сервер ----------
 async def health(request):
     return web.Response(text="OK")
 
@@ -455,9 +571,7 @@ async def main():
     BOT_USERNAME = me.username
     print(f"Бот запущен: @{BOT_USERNAME}")
 
-    # Запускаем self-ping
     asyncio.create_task(self_ping())
-
     polling_task = asyncio.create_task(dp.start_polling(bot))
 
     app = web.Application()
