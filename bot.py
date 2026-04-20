@@ -155,7 +155,7 @@ async def about_bot(message: types.Message):
 """
     await message.answer(about_text, parse_mode="Markdown")
 
-# ---------- Обработчики кнопок и текста ----------
+# ---------- Обработчики кнопок ----------
 @dp.message(lambda message: message.text == "📜 Политика")
 async def privacy_button(message: types.Message):
     await cmd_privacy(message)
@@ -362,10 +362,22 @@ async def handle_answer(callback: types.CallbackQuery):
     else:
         await callback.answer()
 
-# ---------- Обработка текстовых сообщений (истории, свободные ответы) ----------
+# ---------- Обработка текстовых сообщений (с принудительной обработкой админ-команд) ----------
 @dp.message()
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
+
+    # === ПРИНУДИТЕЛЬНАЯ ОБРАБОТКА АДМИН-КОМАНД (даже если не сработал Command) ===
+    if message.text.startswith('/broadcast') and message.from_user.id == OWNER_ID:
+        await broadcast(message)
+        return
+    if message.text.startswith('/bonus') and message.from_user.id == OWNER_ID:
+        await give_bonus(message)
+        return
+    if message.text.startswith('/admin_stats') and message.from_user.id == OWNER_ID:
+        await admin_stats(message)
+        return
+    # =======================================================================
 
     # Обработка истории
     session = user_sessions.get(user_id)
