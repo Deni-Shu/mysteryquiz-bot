@@ -54,6 +54,34 @@ async def get_database_file(message: types.Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
+@dp.message(Command("broadcast"))
+async def broadcast(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Доступ запрещён.")
+        return
+    text = message.text.replace("/broadcast", "").strip()
+    if not text:
+        await message.answer("Напиши текст рассылки после команды.")
+        return
+    # Отправляем уведомление, что рассылка началась
+    status_msg = await message.answer("⏳ Начинаю рассылку...")
+    
+    # Получаем список пользователей
+    async with aiosqlite.connect("test_bot.db") as db:
+        async with db.execute("SELECT user_id FROM users") as cursor:
+            users = await cursor.fetchall()
+    
+    count = 0
+    errors = 0
+    for (user_id,) in users:
+        try:
+            await bot.send_message(user_id, f"📢 *Новости проекта:*\n{text}", parse_mode="Markdown")
+            count += 1
+            await asyncio.sleep(0.05)  # пауза, чтобы не спамить
+        except Exception:
+            errors += 1
+    await status_msg.edit_text(f"✅ Рассылка завершена. Отправлено: {count}, ошибок: {errors}")
+
 # ---------- Админские команды ----------
 @dp.message(Command("admin_stats"))
 async def admin_stats(message: types.Message):
