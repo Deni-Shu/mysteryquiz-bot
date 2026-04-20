@@ -43,7 +43,7 @@ async def use_free_test(user_id: int):
         await db.commit()
 # --------------------------------------------------------------------
 
-# ---------- Команды и кнопки ----------
+# ---------- Админские команды ----------
 @dp.message(Command("admin_stats"))
 async def admin_stats(message: types.Message):
     if message.from_user.id != OWNER_ID:
@@ -68,6 +68,43 @@ async def admin_stats(message: types.Message):
 """
     await message.answer(report)
 
+@dp.message(Command("bonus"))
+async def give_bonus(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Используй: /bonus user_id")
+        return
+    try:
+        user_id = int(args[1])
+        await grant_free_test(user_id)
+        await message.answer(f"✅ Бонус (бесплатный тест) выдан пользователю {user_id}")
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
+
+@dp.message(Command("broadcast"))
+async def broadcast(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    text = message.text.replace("/broadcast", "").strip()
+    if not text:
+        await message.answer("Напиши текст рассылки после команды.")
+        return
+    async with aiosqlite.connect("test_bot.db") as db:
+        async with db.execute("SELECT user_id FROM users") as cursor:
+            users = await cursor.fetchall()
+    count = 0
+    for (user_id,) in users:
+        try:
+            await bot.send_message(user_id, f"📢 *Новости проекта:*\n{text}", parse_mode="Markdown")
+            count += 1
+            await asyncio.sleep(0.05)
+        except:
+            pass
+    await message.answer(f"Рассылка завершена. Отправлено {count} пользователям.")
+
+# ---------- Команды и кнопки ----------
 @dp.message(Command("privacy"))
 async def cmd_privacy(message: types.Message):
     privacy_text = """
@@ -119,43 +156,6 @@ async def about_bot(message: types.Message):
 👉 *Как начать?* Отправь /start
 """
     await message.answer(about_text, parse_mode="Markdown")
-
-# ---------- Админские команды ----------
-@dp.message(Command("bonus"))
-async def give_bonus(message: types.Message):
-    if message.from_user.id != OWNER_ID:
-        return
-    args = message.text.split()
-    if len(args) != 2:
-        await message.answer("Используй: /bonus user_id")
-        return
-    try:
-        user_id = int(args[1])
-        await grant_free_test(user_id)
-        await message.answer(f"✅ Бонус (бесплатный тест) выдан пользователю {user_id}")
-    except Exception as e:
-        await message.answer(f"Ошибка: {e}")
-
-@dp.message(Command("broadcast"))
-async def broadcast(message: types.Message):
-    if message.from_user.id != OWNER_ID:
-        return
-    text = message.text.replace("/broadcast", "").strip()
-    if not text:
-        await message.answer("Напиши текст рассылки после команды.")
-        return
-    async with aiosqlite.connect("test_bot.db") as db:
-        async with db.execute("SELECT user_id FROM users") as cursor:
-            users = await cursor.fetchall()
-    count = 0
-    for (user_id,) in users:
-        try:
-            await bot.send_message(user_id, f"📢 *Новости проекта:*\n{text}", parse_mode="Markdown")
-            count += 1
-            await asyncio.sleep(0.05)
-        except:
-            pass
-    await message.answer(f"Рассылка завершена. Отправлено {count} пользователям.")
 
 # ---------- Кнопочные обработчики ----------
 @dp.message(lambda message: message.text == "📜 Политика")
