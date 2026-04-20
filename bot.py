@@ -42,7 +42,7 @@ async def use_free_test(user_id: int):
         await db.execute("UPDATE users SET free_test_granted = 0 WHERE user_id = ?", (user_id,))
         await db.commit()
 
-# ---------- Админские команды (ДОЛЖНЫ БЫТЬ ПЕРВЫМИ) ----------
+# ---------- ВСЕ КОМАНДЫ (ДОЛЖНЫ БЫТЬ ПЕРВЫМИ) ----------
 @dp.message(Command("admin_stats"))
 async def admin_stats(message: types.Message):
     if message.from_user.id != OWNER_ID:
@@ -103,7 +103,6 @@ async def broadcast(message: types.Message):
             pass
     await message.answer(f"Рассылка завершена. Отправлено {count} пользователям.")
 
-# ---------- Публичные команды ----------
 @dp.message(Command("privacy"))
 async def cmd_privacy(message: types.Message):
     privacy_text = """
@@ -156,7 +155,7 @@ async def about_bot(message: types.Message):
 """
     await message.answer(about_text, parse_mode="Markdown")
 
-# ---------- Кнопочные обработчики ----------
+# ---------- Обработчики кнопок и текста ----------
 @dp.message(lambda message: message.text == "📜 Политика")
 async def privacy_button(message: types.Message):
     await cmd_privacy(message)
@@ -555,7 +554,7 @@ async def main():
     BOT_USERNAME = me.username
     print(f"Бот запущен: @{BOT_USERNAME}")
 
-    # Принудительно удаляем вебхук
+    # Удаляем вебхук перед стартом
     await bot.delete_webhook(drop_pending_updates=True)
     print("Webhook удалён")
     await asyncio.sleep(1)
@@ -563,7 +562,7 @@ async def main():
     # Запускаем polling
     polling_task = asyncio.create_task(dp.start_polling(bot))
 
-    # HTTP-сервер для health check
+    # Запускаем HTTP-сервер для health check
     app = web.Application()
     app.router.add_get("/", health)
     runner = web.AppRunner(app)
